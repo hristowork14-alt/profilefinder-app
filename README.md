@@ -1,5 +1,7 @@
 # ProfileFinder
 
+> **Repository status:** The original application source was missing from this repository. A minimal React landing page and Vite entry point have been added to repair the deployment entry. Search, authentication, bulk uploads, and history are not implemented in this replacement. The documentation below describes the original application and does not reflect the features currently available. Use `npm install` and `npm run dev` to preview the replacement.
+
 Enter a **company website** and a **job title** (e.g. `stripe.com` + `CFO`). ProfileFinder returns the **3–5 most likely LinkedIn profiles** of people holding that role, each with a name, headline, LinkedIn URL, confidence score and a one-sentence reason. It also does **bulk searches from a CSV** and keeps a **search history**.
 
 It never visits, logs in to or scrapes linkedin.com. It finds _public_ profile URLs through a web search API (Serper.dev) and lets Claude rank them.
