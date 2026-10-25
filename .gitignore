@@ -10,3 +10,6 @@ coverage
 .env
 .env.local
 .env.*.local
+
+# Raw real-search captures (contain real people's data; never commit)
+.debug/
