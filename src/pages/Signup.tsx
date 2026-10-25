@@ -7,7 +7,7 @@ import { AuthShell, GoogleIcon } from '@/components/AuthShell';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import { requireBackend } from '@/lib/backend';
-import { DEMO_MODE, MIN_PASSWORD_LENGTH } from '@/lib/config';
+import { DEMO_MODE, MIN_PASSWORD_LENGTH, SHOW_GOOGLE_SIGN_IN } from '@/lib/config';
 import { errorMessage } from '@/lib/utils';
 
 export function SignupPage() {
@@ -99,18 +99,20 @@ export function SignupPage() {
         <Button type="submit" size="lg" loading={busy} disabled={!email || !password}>
           Create account
         </Button>
-        <Button
-          variant="secondary"
-          size="lg"
-          onClick={() =>
-            requireBackend()
-              .auth.signInWithGoogle()
-              .catch((err: unknown) => toast.error(errorMessage(err)))
-          }
-        >
-          <GoogleIcon />
-          Continue with Google
-        </Button>
+        {SHOW_GOOGLE_SIGN_IN && (
+          <Button
+            variant="secondary"
+            size="lg"
+            onClick={() =>
+              requireBackend()
+                .auth.signInWithGoogle()
+                .catch((err: unknown) => toast.error(errorMessage(err)))
+            }
+          >
+            <GoogleIcon />
+            Continue with Google
+          </Button>
+        )}
       </form>
     </AuthShell>
   );

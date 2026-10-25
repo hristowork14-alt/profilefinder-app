@@ -6,7 +6,7 @@ import { AuthShell, GoogleIcon } from '@/components/AuthShell';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import { requireBackend } from '@/lib/backend';
-import { DEMO_MODE } from '@/lib/config';
+import { DEMO_MODE, SHOW_GOOGLE_SIGN_IN } from '@/lib/config';
 import { errorMessage } from '@/lib/utils';
 
 export function LoginPage() {
@@ -79,10 +79,12 @@ export function LoginPage() {
         <Button type="submit" size="lg" loading={busy} disabled={!email || !password}>
           Log in
         </Button>
-        <Button variant="secondary" size="lg" onClick={google}>
-          <GoogleIcon />
-          Continue with Google
-        </Button>
+        {SHOW_GOOGLE_SIGN_IN && (
+          <Button variant="secondary" size="lg" onClick={google}>
+            <GoogleIcon />
+            Continue with Google
+          </Button>
+        )}
       </form>
     </AuthShell>
   );

@@ -3,3 +3,6 @@ dist-demo
 node_modules
 .netlify
 package-lock.json
+
+# Generated prompt documents (not source code)
+prompts/
