@@ -1,0 +1,175 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/schibsted-grotesk';
+
+/*
+  ProfileFinder design tokens.
+  Cool "directory paper" background, ink text, one cobalt accent for actions.
+  Confidence colors follow the spec: green ≥ 75, yellow 50–74, gray < 50.
+*/
+:root {
+  color-scheme: light;
+  --paper: #f1f4ef;
+  --surface: #ffffff;
+  --sunken: #e7ebe5;
+  --ink: #17222a;
+  --muted: #56636b;
+  --line: #d3dad3;
+  --line-strong: #b3bdb5;
+  --accent: #2a45c9;
+  --accent-hover: #1f35a3;
+  --accent-soft: #e3e8fb;
+  --on-accent: #ffffff;
+  --high: #1d6f44;
+  --high-soft: #d9f0e2;
+  --mid: #835c00;
+  --mid-soft: #f9ecc4;
+  --low: #56636b;
+  --low-soft: #e4e8e5;
+  --danger: #a8231c;
+  --danger-soft: #fbe3e1;
+  --demo: #5a3fb0;
+  --demo-soft: #ebe5fb;
+  --focus: #2a45c9;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --paper: #101517;
+    --surface: #172024;
+    --sunken: #0c1012;
+    --ink: #e4ebe6;
+    --muted: #98a6ad;
+    --line: #29353a;
+    --line-strong: #3b4a50;
+    --accent: #8fa3ff;
+    --accent-hover: #b0beff;
+    --accent-soft: #1d2650;
+    --on-accent: #0c1236;
+    --high: #6fd69c;
+    --high-soft: #143524;
+    --mid: #f0c75a;
+    --mid-soft: #3a2f0e;
+    --low: #a3b0b6;
+    --low-soft: #222c30;
+    --danger: #ff9b92;
+    --danger-soft: #3d1714;
+    --demo: #c4b2ff;
+    --demo-soft: #2a2148;
+    --focus: #8fa3ff;
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --paper: #101517;
+  --surface: #172024;
+  --sunken: #0c1012;
+  --ink: #e4ebe6;
+  --muted: #98a6ad;
+  --line: #29353a;
+  --line-strong: #3b4a50;
+  --accent: #8fa3ff;
+  --accent-hover: #b0beff;
+  --accent-soft: #1d2650;
+  --on-accent: #0c1236;
+  --high: #6fd69c;
+  --high-soft: #143524;
+  --mid: #f0c75a;
+  --mid-soft: #3a2f0e;
+  --low: #a3b0b6;
+  --low-soft: #222c30;
+  --danger: #ff9b92;
+  --danger-soft: #3d1714;
+  --demo: #c4b2ff;
+  --demo-soft: #2a2148;
+  --focus: #8fa3ff;
+}
+
+@theme inline {
+  --font-sans: 'Schibsted Grotesk Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-on-accent: var(--on-accent);
+  --color-high: var(--high);
+  --color-high-soft: var(--high-soft);
+  --color-mid: var(--mid);
+  --color-mid-soft: var(--mid-soft);
+  --color-low: var(--low);
+  --color-low-soft: var(--low-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-demo: var(--demo);
+  --color-demo-soft: var(--demo-soft);
+}
+
+/* Unlayered on purpose: these must win over any host page reset. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-rendering: optimizeLegibility;
+}
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: var(--accent-soft);
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* The one orchestrated motion moment: result rows arrive in rank order. */
+@keyframes rank-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.rank-in {
+  animation: rank-in 320ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@keyframes meter-fill {
+  from {
+    transform: scaleX(0);
+  }
+}
+.meter-fill {
+  transform-origin: left center;
+  animation: meter-fill 600ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
