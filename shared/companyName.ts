@@ -21,7 +21,12 @@ const GENERIC_SEGMENTS = new Set([
   'inicio',
   'accueil',
 ]);
-const TITLE_SEPARATORS = /\s+[|–—·•:»]\s+|\s+-\s+/;
+// " | ", " – ", " - " … and also "Cloudflare: Build…" (colon without a space before it) and
+// sentence-style titles such as "Amazon.com. Spend less." A period only splits after 3+ letters or
+// digits, so abbreviations like "Dr. Oetker" or "St. Pauli" stay whole.
+const TITLE_SEPARATORS = /\s+[|–—·•»]\s+|\s+-\s+|\s*:\s+|(?<=[\p{L}\p{N}]{3})\.\s+/u;
+/** A title segment longer than this, that doesn't mention the domain, is treated as a slogan. */
+const MAX_UNMATCHED_WORDS = 4;
 
 const NAMED_ENTITIES: Record<string, string> = {
   amp: '&',
@@ -77,17 +82,31 @@ function findTitleName(html: string, domain: string): string | null {
 
   const segments = title
     .split(TITLE_SEPARATORS)
-    .map((segment) => segment.replace(/^(?:welcome to|home of)\s+/i, '').trim())
+    .map((segment) =>
+      segment
+        .replace(/^(?:welcome to|home of)\s+/i, '')
+        .replace(/[.!]+$/, '')
+        .trim(),
+    )
     .filter(usable);
   if (segments.length === 0) return null;
 
   // Prefer the segment that contains the domain's name ("Paylane" for paylane.com).
-  const domainKey = domainToCompanyName(domain).toLowerCase().replace(/\s+/g, '');
+  const domainName = domainToCompanyName(domain);
+  const domainKey = domainName.toLowerCase().replace(/\s+/g, '');
   const matching = segments.find((segment) => {
     const key = segment.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
     return key.includes(domainKey) || (key.length >= 3 && domainKey.includes(key));
   });
-  return matching ?? segments[0] ?? null;
+  if (matching) {
+    // "Amazon.com" for amazon.com → "Amazon": people write the brand, not the address.
+    return matching.toLowerCase() === domain.toLowerCase() ? domainName : matching;
+  }
+
+  // No segment names the company: keep a short one (brand differs from the domain), but treat a
+  // long one as a slogan and let the caller fall back to the domain.
+  const first = segments[0];
+  return first && first.split(/\s+/).length <= MAX_UNMATCHED_WORDS ? first : null;
 }
 
 export function resolveCompanyName(html: string | null, domain: string): { name: string; source: CompanyNameSource } {

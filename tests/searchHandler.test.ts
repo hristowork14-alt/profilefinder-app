@@ -122,6 +122,22 @@ describe('search function handler', () => {
     expect(store.searches.at(-1)?.bulkJobId).toBe(jobId);
   });
 
+  // An empty answer may be a temporary miss (or, as seen in production, a wrongly resolved
+  // company name), so it must not lock that company + role out for the 7-day cache window.
+  it('does not cache an empty result', async () => {
+    await post({ companyUrl: 'empty.example', position: 'CTO' });
+    const second = (await (await post({ companyUrl: 'empty.example', position: 'CTO' })).json()) as SearchResponse;
+    expect(second.fromCache).toBe(false);
+    expect(store.searches[1]?.fromCache).toBe(false);
+  });
+
+  it('ignores an empty cache entry written earlier and searches again', async () => {
+    await store.putCached({ domain: 'stripe.com', positionNormalized: 'cfo', companyName: 'Stripe', results: [] });
+    const body = (await (await post({ companyUrl: 'stripe.com', position: 'CFO' })).json()) as SearchResponse;
+    expect(body.fromCache).toBe(false);
+    expect(body.results.length).toBeGreaterThan(0);
+  });
+
   it('does not cache heuristic fallback results', async () => {
     await post({ companyUrl: 'flaky-ai.example', position: 'CEO' });
     const second = (await (await post({ companyUrl: 'flaky-ai.example', position: 'CEO' })).json()) as SearchResponse;

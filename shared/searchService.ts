@@ -54,7 +54,8 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
   } catch (error) {
     log(`Cache read failed: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (cached) {
+  // An empty cached answer is ignored (older versions cached them), so the company is searched again.
+  if (cached && cached.results.length > 0) {
     const searchId = await save({
       userId,
       bulkJobId: input.bulkJobId,
@@ -132,10 +133,11 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
     results: result.results,
   });
 
-  // 5) Cache only complete, best-quality answers: all queries succeeded, and the results came
-  //    from Claude (or no model is configured at all). A heuristic fallback is not cached so the
-  //    next attempt can get Claude's ranking.
-  const cacheable = result.searchErrors === 0 && (result.rankedBy === 'claude' || !deps.pipelineDeps.llm);
+  // 5) Cache only complete, best-quality answers: all queries succeeded, the results came from
+  //    Claude (or no model is configured at all), and something was found. A heuristic fallback is
+  //    not cached so the next attempt can get Claude's ranking, and an empty answer is not cached so
+  //    a temporary miss doesn't stick for the whole cache window.
+  const cacheable = result.searchErrors === 0 && result.results.length > 0 && (result.rankedBy === 'claude' || !deps.pipelineDeps.llm);
   if (cacheable) {
     try {
       await store.putCached({
