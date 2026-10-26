@@ -86,13 +86,21 @@ export async function runBulkJob(
   return { outcome: 'completed', message: null };
 }
 
-/** Rows for the results CSV, in the original file order. */
+/** Rows for the results export (Excel / CSV), in the original file order. */
 export async function collectExportRows(backend: Backend, jobId: string): Promise<ExportRow[]> {
   const rows = await backend.bulk.listRows(jobId);
   const ids = rows.map((r) => r.searchId).filter((id): id is string => Boolean(id));
   const results = await backend.bulk.getSearchResults(ids);
   return rows.map((row) => {
     const found = row.searchId ? results.get(row.searchId) : undefined;
-    return { companyUrl: row.companyUrl, position: row.position, companyName: found?.companyName ?? null, results: found?.results ?? [] };
+    return {
+      companyUrl: row.companyUrl,
+      position: row.position,
+      companyName: found?.companyName ?? null,
+      results: found?.results ?? [],
+      status: row.status,
+      error: row.error,
+      ...(found && found.verifiedHolder !== undefined ? { verifiedHolder: found.verifiedHolder } : {}),
+    };
   });
 }

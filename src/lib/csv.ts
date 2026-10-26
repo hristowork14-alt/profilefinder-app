@@ -2,7 +2,7 @@
 
 import Papa from 'papaparse';
 import { parseCompanyUrl } from '@shared/domain';
-import type { RankedProfile } from '@shared/types';
+import type { RankedProfile, VerifiedHolder } from '@shared/types';
 import { sanitizeText } from '@shared/validation';
 
 export const MAX_BULK_ROWS = 100;
@@ -98,6 +98,11 @@ export interface ExportRow {
   position: string;
   companyName: string | null;
   results: RankedProfile[];
+  /** Bulk row status; the Excel export uses it to label rows that failed or weren't searched. */
+  status?: 'pending' | 'running' | 'completed' | 'failed';
+  error?: string | null;
+  /** Real app only: the person independent sources name (also when no profile was found). */
+  verifiedHolder?: VerifiedHolder | null;
 }
 
 export const EXPORT_COLUMNS = [

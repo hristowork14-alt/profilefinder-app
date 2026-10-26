@@ -3,7 +3,7 @@
 //   demoBackend     — runs entirely in the browser with fixture data (VITE_DEMO_MODE=true)
 
 import type { BulkJobRecord, BulkRowRecord, JobStatus, SearchRecord, SearchWithResults } from '@shared/records';
-import type { PipelineStep, RankedProfile, SearchResponse } from '@shared/types';
+import type { PipelineStep, RankedProfile, SearchResponse, VerifiedHolder } from '@shared/types';
 
 export interface AuthUser {
   id: string;
@@ -40,6 +40,13 @@ export interface NewBulkRow {
   error: string | null;
 }
 
+export interface SearchExport {
+  companyName: string | null;
+  results: RankedProfile[];
+  /** Real app: the verified holder, or null when verification found nobody. Demo: absent. */
+  verifiedHolder?: VerifiedHolder | null;
+}
+
 export interface BulkApi {
   createJob(fileName: string, rows: NewBulkRow[]): Promise<BulkJobRecord>;
   listJobs(): Promise<BulkJobRecord[]>;
@@ -50,8 +57,8 @@ export interface BulkApi {
   refreshProgress(jobId: string): Promise<number>;
   setJobStatus(jobId: string, status: JobStatus): Promise<void>;
   deleteJob(jobId: string): Promise<void>;
-  /** Company name + results for the given searches (for the CSV export). */
-  getSearchResults(searchIds: string[]): Promise<Map<string, { companyName: string | null; results: RankedProfile[] }>>;
+  /** Company name + results (and, in the real app, the verified holder) for the given searches (for the export). */
+  getSearchResults(searchIds: string[]): Promise<Map<string, SearchExport>>;
 }
 
 export interface HistoryApi {

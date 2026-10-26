@@ -58,6 +58,7 @@ export function BulkPage() {
   const [running, setRunning] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<BulkJobRecord | null>(null);
   const [csvFile, setCsvFile] = useState<CsvFile | null>(null);
+  const [exporting, setExporting] = useState<string | null>(null);
   const stopRef = useRef(false);
 
   // The demo shows files in a dialog (hosted previews may block downloads); the real app downloads directly.
@@ -165,12 +166,28 @@ export function BulkPage() {
     }
   };
 
+  const exportBase = (job: BulkJobRecord) => `${job.fileName.replace(/\.(csv|txt)$/i, '')}-results`;
+
   const download = async (job: BulkJobRecord) => {
     try {
       const csv = buildResultsCsv(await collectExportRows(backend, job.id));
-      offerCsv(`${job.fileName.replace(/\.(csv|txt)$/i, '')}-results.csv`, csv);
+      offerCsv(`${exportBase(job)}.csv`, csv);
     } catch (error) {
       toast.error(errorMessage(error));
+    }
+  };
+
+  // Formatted Excel workbook (real app). exceljs is loaded only when someone downloads.
+  const downloadExcel = async (job: BulkJobRecord) => {
+    setExporting(job.id);
+    try {
+      const rows = await collectExportRows(backend, job.id);
+      const { downloadResultsXlsx } = await import('@/lib/xlsxExport');
+      await downloadResultsXlsx(rows, { fileName: job.fileName, exportedAt: new Date() }, `${exportBase(job)}.xlsx`);
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setExporting(null);
     }
   };
 
@@ -327,12 +344,24 @@ export function BulkPage() {
                     : 'Paused.'}
               </p>
             </div>
-            {!running && activeJob.processedRows > 0 && (
-              <Button onClick={() => void download(activeJob)}>
-                <Download className="size-4" aria-hidden="true" />
-                Download results CSV
-              </Button>
-            )}
+            {!running &&
+              activeJob.processedRows > 0 &&
+              (DEMO_MODE ? (
+                <Button onClick={() => void download(activeJob)}>
+                  <Download className="size-4" aria-hidden="true" />
+                  Download results CSV
+                </Button>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={() => void downloadExcel(activeJob)} loading={exporting === activeJob.id}>
+                    {exporting !== activeJob.id && <Download className="size-4" aria-hidden="true" />}
+                    Download Excel
+                  </Button>
+                  <Button variant="secondary" onClick={() => void download(activeJob)}>
+                    CSV
+                  </Button>
+                </div>
+              ))}
           </div>
           <ProgressBar
             processed={running ? progress.processed : activeJob.processedRows}
@@ -386,10 +415,16 @@ export function BulkPage() {
                         Resume
                       </Button>
                     )}
+                    {job.processedRows > 0 && !isActive && !DEMO_MODE && (
+                      <Button variant="secondary" size="sm" onClick={() => void downloadExcel(job)} loading={exporting === job.id}>
+                        {exporting !== job.id && <Download className="size-4" aria-hidden="true" />}
+                        Excel
+                      </Button>
+                    )}
                     {job.processedRows > 0 && !isActive && (
                       <Button variant="secondary" size="sm" onClick={() => void download(job)}>
-                        <Download className="size-4" aria-hidden="true" />
-                        Results CSV
+                        {DEMO_MODE && <Download className="size-4" aria-hidden="true" />}
+                        {DEMO_MODE ? 'Results CSV' : 'CSV'}
                       </Button>
                     )}
                     {!isActive && (

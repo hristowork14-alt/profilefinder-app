@@ -5,7 +5,7 @@ import type { RankedProfile, SourceLink } from '@shared/types';
 import type { BulkJobRow, BulkJobRowRow, Json, SearchResultRow, SearchRow } from '@/types/database';
 import { ApiError, deleteAccountRequest, searchRequest } from '../api';
 import { getSupabase } from '../supabaseClient';
-import type { AuthEvent, AuthUser, Backend } from './types';
+import type { AuthEvent, AuthUser, Backend, SearchExport } from './types';
 
 const appUrl = (path: string) => `${window.location.origin}${path}`;
 
@@ -274,14 +274,20 @@ export function createSupabaseBackend(): Backend {
         if (error) fail('delete the bulk job', error);
       },
       async getSearchResults(searchIds) {
-        const map = new Map<string, { companyName: string | null; results: RankedProfile[] }>();
+        const map = new Map<string, SearchExport>();
         for (let i = 0; i < searchIds.length; i += 100) {
           const chunk = searchIds.slice(i, i + 100);
-          const { data, error } = await supabase.from('searches').select('id, company_name, search_results(*)').in('id', chunk);
+          const { data, error } = await supabase
+            .from('searches')
+            .select('id, company_name, verified_holder, verified_sources, verified_source_links, search_results(*)')
+            .in('id', chunk);
           if (error) fail('load the results', error);
           for (const row of data ?? []) {
             const results = [...((row.search_results ?? []) as SearchResultRow[])].sort((a, b) => a.rank - b.rank).map(mapResult);
-            map.set(row.id, { companyName: row.company_name, results });
+            const verifiedHolder = row.verified_holder
+              ? { name: row.verified_holder, sources: row.verified_sources ?? 0, sourceLinks: sourceLinks(row.verified_source_links) }
+              : null;
+            map.set(row.id, { companyName: row.company_name, results, verifiedHolder });
           }
         }
         return map;
