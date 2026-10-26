@@ -130,8 +130,11 @@ const FORMER_BEFORE_NAME =
 /** Words right before a role mention that make it a past role ("former CEO", "the ex-CEO"). */
 const FORMER_BEFORE_ROLE = /\b(?:former|formerly|ex|previous|previously|outgoing|retired|retiring|departing|then|past|founding)[\s-]*$/i;
 
+// One capitalized name word, including "O'Mara", "D'Angelo", "McDonald", "MacArthur" and
+// double-barrelled "Smith-Jones" (each part capitalized).
+const NAME_WORD = String.raw`(?:Mc|Mac|O['’]|D['’])?\p{Lu}[\p{Ll}\p{M}'’]+(?:-\p{Lu}?[\p{Ll}\p{M}'’]+)*`;
 // A run of 2–4 capitalized words ("Mara Velin", "Jon Hale-Smith", "Žofia Dvořáková").
-const NAME_RUN = /\p{Lu}[\p{Ll}\p{M}'’-]+(?:\s+\p{Lu}[\p{Ll}\p{M}'’-]+){1,3}/gu;
+const NAME_RUN = new RegExp(`${NAME_WORD}(?:\\s+${NAME_WORD}){1,3}`, 'gu');
 const ACRONYM_STOPWORDS = new Set(['of', 'and', '&', 'the', 'for']);
 
 function fold(text: string): string {

@@ -18,6 +18,8 @@ export interface Candidate {
   slug: string;
   /** How many independent (non-LinkedIn) sources name this person in the role. Only set when corroboration ran. */
   corroboratedBy?: number;
+  /** Returned by a search for the verified person's name together with the company name. */
+  foundWithCompany?: boolean;
 }
 
 /** One ranked profile, as shown to the user. */

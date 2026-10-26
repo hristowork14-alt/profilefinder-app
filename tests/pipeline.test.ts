@@ -281,6 +281,51 @@ describe('runSearchPipeline: multi-strategy verification', () => {
     expect(result.results[0]?.linkedinUrl).toBe(andrew.url);
   });
 
+  it('accepts the profile returned for "<name>" "<company>" even when its snippet is bare, but not a bare namesake', async () => {
+    const bare: SearchHit = { title: 'Andy Corwin | LinkedIn', snippet: 'Seattle.', url: 'https://www.linkedin.com/in/andy-corwin' };
+    const namesake: SearchHit = { title: 'Andy Corwin | LinkedIn', snippet: 'Leeds.', url: 'https://www.linkedin.com/in/andy-corwin-77' };
+    const result = await run(provider([], { '"Andy Corwin" "Orbitly"': [bare], '"Andy Corwin"': [namesake], '"Andrew Corwin"': [] }));
+    expect(result.results.map((r) => r.linkedinUrl)).toEqual([bare.url]);
+    expect(result.results[0]?.verified).toBe(true);
+  });
+
+  it('records the names on the profiles each person lookup returned (names only)', async () => {
+    const result = await run(provider([], { '"Andrew Corwin"': [andrew], '"Andy Corwin"': [] }));
+    const lookup = result.trace.queries.find((q) => q.query.includes('"Andrew Corwin"'));
+    expect(lookup?.profiles).toEqual(['Andrew Corwin']);
+    expect(JSON.stringify(result.trace)).not.toMatch(/500\+ connections/);
+  });
+
+  // Production 2026-10-26 (shelly.com + CFO): two people tied in the regex reading (the current
+  // and the former CFO) and the first one was shown as verified.
+  describe('when two people are named equally often', () => {
+    const tie: SearchHit[] = [
+      { title: 'Orbitly CEO Mara Velin', snippet: '', url: 'https://a.example/1' },
+      { title: 'Mara Velin, CEO at Orbitly', snippet: '', url: 'https://b.example/2' },
+      { title: 'Orbitly CEO Jon Hale', snippet: '', url: 'https://c.example/3' },
+      { title: 'Jon Hale, CEO at Orbitly', snippet: '', url: 'https://d.example/4' },
+    ];
+
+    it('does not call either of them verified on the regex reading alone', async () => {
+      const result = await run(provider([], {}, tie));
+      expect(result.verifiedHolder).toBeNull();
+      expect(result.trace.extraction).toBe('tie');
+      expect(result.results.every((r) => !r.verified)).toBe(true);
+    });
+
+    it('lets Claude decide between them', async () => {
+      const llm: LlmClient = {
+        complete: async ({ prompt }) =>
+          prompt.includes('<candidates>')
+            ? JSON.stringify({ results: [] })
+            : JSON.stringify({ holder: { name: 'Jon Hale', isCurrent: true, sourceIds: [3, 4] } }),
+      };
+      const result = await run(provider([], {}, tie), llm);
+      expect(result.verifiedHolder?.name).toBe('Jon Hale');
+      expect(result.trace.extraction).toBe('claude');
+    });
+  });
+
   it('records every query with its kind, hit count and time', async () => {
     const result = await run(provider([], { '"Andrew Corwin"': [andrew], '"Andy Corwin"': [] }));
     const kinds = new Set(result.trace.queries.map((q) => q.kind));

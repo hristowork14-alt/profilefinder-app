@@ -22,6 +22,11 @@ function quote(term: string): string {
   return `"${clean(term)}"`;
 }
 
+/** True when the query searches for this exact (quoted) phrase, e.g. the company name. */
+export function queryMentions(query: string, term: string): boolean {
+  return query.includes(quote(term));
+}
+
 /**
  * Independent evidence, phrased as a question so Google shows its answer box / knowledge panel
  * ("who is the Chief Executive Officer of Orbitly"). LinkedIn is excluded.

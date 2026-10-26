@@ -46,6 +46,19 @@ describe('extractNamedPeople', () => {
     expect(extractNamedPeople([hits[2]!], ctx)).toEqual([]);
   });
 
+  it("reads whole names with an apostrophe, a Mc/Mac prefix or a hyphen (O'Mara, McDonald, Smith-Jones)", () => {
+    for (const name of ["Eileen O'Mara", 'Ian McDonald', 'Anna Smith-Jones', 'Lea MacArthur']) {
+      const people = extractNamedPeople(
+        [
+          { title: `Northwind CTO ${name}`, snippet: '', url: 'https://a.example' },
+          { title: `Interview: ${name}, CTO at Northwind`, snippet: '', url: 'https://b.example' },
+        ],
+        ctx,
+      );
+      expect(people[0]).toMatchObject({ name, sources: 2 });
+    }
+  });
+
   it('handles non-ASCII names', () => {
     const people = extractNamedPeople(
       [

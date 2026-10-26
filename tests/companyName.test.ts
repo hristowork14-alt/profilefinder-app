@@ -52,6 +52,14 @@ describe('resolveCompanyName', () => {
     expect(resolveCompanyName('<title>Mailchimp | Marketing, Automation</title>', 'intuit-mc.com').name).toBe('Mailchimp');
   });
 
+  // Production 2026-10-26 (ferrari.com): the company was shown as "Official Ferrari website".
+  it('drops "official website" wording around the brand', () => {
+    expect(resolveCompanyName('<meta property="og:site_name" content="Official Ferrari website">', 'ferrari.com').name).toBe('Ferrari');
+    expect(resolveCompanyName('<title>Orbitly Official Website</title>', 'orbitly.com').name).toBe('Orbitly');
+    expect(resolveCompanyName('<title>The official site of Quiet Pine</title>', 'quietpine.com').name).toBe('Quiet Pine');
+    expect(resolveCompanyName('<title>Official Website</title>', 'quietpine.com').name).toBe('Quietpine');
+  });
+
   it('decodes HTML entities', () => {
     expect(resolveCompanyName('<title>Smith &amp; Sons | Home</title>', 'smithandsons.com').name).toBe('Smith & Sons');
     expect(resolveCompanyName('<meta property="og:site_name" content="Ben &#39;n&#x27; Co">', 'ben.co').name).toBe("Ben 'n' Co");

@@ -19,7 +19,14 @@ import { extractHolderWithClaude, type ExtractedHolder } from './extractHolder';
 import { parseLinkedInTitle, rankHeuristically } from './heuristicRanker';
 import { normalizeLinkedInProfileUrl } from './linkedinUrl';
 import { findSynonyms, normalizePosition } from './positionSynonyms';
-import { buildDomainQuery, buildEvidenceQuery, buildNameQueries, buildPersonQueries, buildQuestionQuery } from './queryBuilder';
+import {
+  buildDomainQuery,
+  buildEvidenceQuery,
+  buildNameQueries,
+  buildPersonQueries,
+  buildQuestionQuery,
+  queryMentions,
+} from './queryBuilder';
 import { rankWithClaude } from './rankWithClaude';
 import type {
   Candidate,
@@ -87,9 +94,12 @@ export interface QueryTrace {
   hits: number;
   ms: number;
   error?: string;
+  /** Person lookups only: the names on the LinkedIn profiles returned (names only, no snippets). */
+  profiles?: string[];
 }
 
-export type Extraction = 'none' | 'regex' | 'claude' | 'agree' | 'disagree';
+/** How the holder was read from the evidence. 'tie': the regex named two people equally often and Claude didn't settle it. */
+export type Extraction = 'none' | 'regex' | 'claude' | 'agree' | 'disagree' | 'tie';
 
 /** What happened during one search. Stored server-side for debugging; never contains snippets. */
 export interface PipelineTrace {
@@ -140,6 +150,12 @@ export function filterAndDedupe(hits: SearchHit[]): Candidate[] {
   return [...bySlug.values()];
 }
 
+/** Names on the LinkedIn profiles among search hits (for diagnostics: names only). */
+function profileNames(hits: SearchHit[]): string[] {
+  const names = hits.filter((h) => normalizeLinkedInProfileUrl(h.url)).map((h) => parseLinkedInTitle(h.title ?? '').name.slice(0, 80));
+  return [...new Set(names.filter(Boolean))].slice(0, 5);
+}
+
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 function safeHostname(url: string): string {
@@ -155,11 +171,20 @@ function questionTitle(position: string, synonyms: string[]): string {
   return /^[A-Z]{2,5}$/.test(position.trim()) ? (evidenceRoleTerms(position, synonyms)[1] ?? position) : position;
 }
 
+/** The regex reading's favourite, or null when it names nobody — or two people equally often. */
+function regexFavourite(names: EvidenceName[]): { top: EvidenceName | null; tie: boolean } {
+  const [top, second] = names;
+  if (!top) return { top: null, tie: false };
+  const tie = Boolean(second && second.sources === top.sources && !namesMatch(second.name, top.name));
+  return { top: tie ? null : top, tie };
+}
+
 /** Combines the regex and Claude readings of the evidence (S2 agreement rule). */
 function agree(
   regexTop: EvidenceName | null,
   claude: ExtractedHolder | null,
   minSources: number,
+  regexTie = false,
 ): { holder: VerifiedHolder | null; extraction: Extraction } {
   const fromRegex = regexTop && regexTop.sources >= minSources ? regexTop : null;
   const fromClaude = claude && claude.sources >= minSources ? claude : null;
@@ -181,7 +206,7 @@ function agree(
   }
   if (fromClaude) return { holder: toHolder(fromClaude), extraction: 'claude' };
   if (fromRegex) return { holder: toHolder(fromRegex), extraction: 'regex' };
-  return { holder: null, extraction: 'none' };
+  return { holder: null, extraction: regexTie ? 'tie' : 'none' };
 }
 
 export async function runSearchPipeline(input: { domain: string; position: string }, deps: PipelineDeps): Promise<PipelineResult> {
@@ -208,7 +233,13 @@ export async function runSearchPipeline(input: { domain: string; position: strin
       deps.searchProvider.search(query, { signal, limit: RESULTS_PER_QUERY }),
     ).then(
       (hits) => {
-        trace.queries.push({ query, kind, hits: hits.length, ms: clock() - started });
+        trace.queries.push({
+          query,
+          kind,
+          hits: hits.length,
+          ms: clock() - started,
+          ...(kind === 'person' ? { profiles: profileNames(hits) } : {}),
+        });
         return hits;
       },
       (error: unknown) => {
@@ -264,10 +295,21 @@ export async function runSearchPipeline(input: { domain: string; position: strin
   let holder: VerifiedHolder | null = null;
   let usedModelForExtraction = false;
   let personErrors = 0;
+  /** Profiles returned for "<name>" "<company>": Google matched the company on those pages. */
+  const foundWithCompany = new Set<string>();
   const lookUp = async (name: string): Promise<SearchHit[]> => {
-    const settled = await Promise.allSettled(buildPersonQueries(name, company.name).map((q) => runQuery(q, 'person', timing.minLlmMs)));
-    return settled.flatMap((outcome) => {
-      if (outcome.status === 'fulfilled') return outcome.value;
+    const queries = buildPersonQueries(name, company.name);
+    const settled = await Promise.allSettled(queries.map((q) => runQuery(q, 'person', timing.minLlmMs)));
+    return settled.flatMap((outcome, index) => {
+      if (outcome.status === 'fulfilled') {
+        if (queryMentions(queries[index] ?? '', company.name)) {
+          for (const hit of outcome.value) {
+            const slug = normalizeLinkedInProfileUrl(hit.url)?.slug;
+            if (slug) foundWithCompany.add(slug);
+          }
+        }
+        return outcome.value;
+      }
       personErrors++;
       return [];
     });
@@ -281,7 +323,9 @@ export async function runSearchPipeline(input: { domain: string; position: strin
     );
     trace.timings.evidenceMs = clock() - evidenceStarted;
     regexNames = extractNamedPeople(evidenceHits, ctxBase);
-    const regexTop = regexNames[0] ?? null;
+    // Two people named equally often (often the current and a former holder): the regex can't
+    // tell which one holds the role, so only Claude's reading can decide.
+    const { top: regexTop, tie: regexTie } = regexFavourite(regexNames);
     // Start looking up the regex favourite right away; Claude usually agrees.
     const early = regexTop ? lookUp(regexTop.name) : Promise.resolve([] as SearchHit[]);
 
@@ -300,7 +344,7 @@ export async function runSearchPipeline(input: { domain: string; position: strin
       trace.timings.extractionMs = clock() - extractionStarted;
     }
 
-    const agreed = agree(regexTop, claude, 2);
+    const agreed = agree(regexTop, claude, 2, regexTie);
     holder = agreed.holder;
     trace.extraction = agreed.extraction;
     trace.evidence = regexNames.map((e) => ({
@@ -355,7 +399,10 @@ export async function runSearchPipeline(input: { domain: string; position: strin
   const queries = trace.queries.map((q) => q.query);
   const candidates = filterAndDedupe(hits);
   if (verify) {
-    for (const candidate of candidates) candidate.corroboratedBy = corroborationFor(parseLinkedInTitle(candidate.title).name, evidence);
+    for (const candidate of candidates) {
+      candidate.corroboratedBy = corroborationFor(parseLinkedInTitle(candidate.title).name, evidence);
+      if (foundWithCompany.has(candidate.slug)) candidate.foundWithCompany = true;
+    }
   }
   const ctx: RankingContext = { ...ctxBase, ...(verify ? { evidence } : {}) };
   const base = {

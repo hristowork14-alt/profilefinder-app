@@ -48,7 +48,9 @@ export function decideResults(
 ): DecisionOutcome {
   if (holder) {
     const matching = candidates
-      .filter((c) => namesMatch(holder.name, parseLinkedInTitle(c.title).name) && relatesToRole(c, ctx))
+      // Google matched the company on the page when it answered "<name>" "<company>", so a bare
+      // snippet is fine then; otherwise the snippet itself must mention the company or the role.
+      .filter((c) => namesMatch(holder.name, parseLinkedInTitle(c.title).name) && (c.foundWithCompany || relatesToRole(c, ctx)))
       .slice(0, MAX_VERIFIED_PROFILES);
     if (matching.length === 0) return { results: [], verifiedHolder: holder, decision: 'verified_no_profile' };
 

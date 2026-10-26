@@ -67,6 +67,17 @@ describe('decideResults', () => {
     expect(out.results).toEqual([]);
   });
 
+  // Production 2026-10-26 (cloudflare.com + CTO): the real profile came back for the search
+  // "<name>" "<company>", but its snippet named neither the company nor the role.
+  it('accepts the verified name on a profile found by searching for the name together with the company', () => {
+    const bare = { ...real, title: 'Andy Corwin | LinkedIn', snippet: 'Building things. Seattle.', foundWithCompany: true };
+    const out = decideResults([], [bare], holder, ctx);
+    expect(out.decision).toBe('verified_profile');
+    expect(out.results[0]?.linkedinUrl).toBe(bare.linkedinUrl);
+    // The same bare profile, found only by name, is still not enough.
+    expect(decideResults([], [{ ...bare, foundWithCompany: false }], holder, ctx).decision).toBe('verified_no_profile');
+  });
+
   it('verified holder without a findable profile: no profiles at all, holder card only', () => {
     const out = decideResults([ranked('zed fakeman', fake.linkedinUrl, 20)], [fake], holder, ctx);
     expect(out.decision).toBe('verified_no_profile');

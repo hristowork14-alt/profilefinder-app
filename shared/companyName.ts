@@ -59,6 +59,22 @@ function clean(text: string): string {
   return decodeHtmlEntities(text).replace(/\s+/g, ' ').trim();
 }
 
+const SITE_WORDS = String.raw`(?:web\s?site|site|home\s?page|online\s+store|store)`;
+/** "Official Ferrari website", "Orbitly Official Website", "The official site of Quiet Pine" → the brand. */
+const OFFICIAL_WRAPPERS = [
+  new RegExp(String.raw`^(?:the\s+)?official\s+${SITE_WORDS}\s+(?:of|for)\s+(.+)$`, 'i'),
+  new RegExp(String.raw`^(?:the\s+)?official\s+(.+?)\s+${SITE_WORDS}$`, 'i'),
+  new RegExp(String.raw`^(.+?)\s+official\s+${SITE_WORDS}$`, 'i'),
+];
+
+function unwrapOfficial(name: string): string {
+  for (const pattern of OFFICIAL_WRAPPERS) {
+    const brand = name.match(pattern)?.[1]?.trim();
+    if (brand) return brand;
+  }
+  return name;
+}
+
 function usable(name: string): boolean {
   return name.length > 0 && name.length <= MAX_NAME_LENGTH && !GENERIC_SEGMENTS.has(name.toLowerCase());
 }
@@ -68,7 +84,7 @@ function findOgSiteName(html: string): string | null {
   for (const tag of metaTags) {
     if (!/(?:property|name)\s*=\s*["']og:site_name["']/i.test(tag)) continue;
     const content = tag.match(/content\s*=\s*"([^"]*)"|content\s*=\s*'([^']*)'/i);
-    const value = clean(content?.[1] ?? content?.[2] ?? '');
+    const value = unwrapOfficial(clean(content?.[1] ?? content?.[2] ?? ''));
     if (usable(value)) return value;
   }
   return null;
@@ -83,10 +99,12 @@ function findTitleName(html: string, domain: string): string | null {
   const segments = title
     .split(TITLE_SEPARATORS)
     .map((segment) =>
-      segment
-        .replace(/^(?:welcome to|home of)\s+/i, '')
-        .replace(/[.!]+$/, '')
-        .trim(),
+      unwrapOfficial(
+        segment
+          .replace(/^(?:welcome to|home of)\s+/i, '')
+          .replace(/[.!]+$/, '')
+          .trim(),
+      ),
     )
     .filter(usable);
   if (segments.length === 0) return null;
