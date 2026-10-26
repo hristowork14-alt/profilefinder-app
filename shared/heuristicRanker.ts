@@ -74,13 +74,22 @@ export function rankHeuristically(candidates: Candidate[], ctx: RankingContext):
     const synonymInTitle = ctx.synonyms.find((s) => includesPhrase(headline, s));
     const exactInSnippet = includesPhrase(candidate.snippet, ctx.position);
     const synonymInSnippet = ctx.synonyms.find((s) => includesPhrase(candidate.snippet, s));
-    if (!exactInTitle && !synonymInTitle && !exactInSnippet && !synonymInSnippet) continue;
+    const roleMentioned = Boolean(exactInTitle || synonymInTitle || exactInSnippet || synonymInSnippet);
+    // Independent sources (see corroboration.ts): only used when the real app ran that check.
+    const evidenceNamesSomeone = (ctx.evidence?.length ?? 0) > 0;
+    const corroboratedBy = original.corroboratedBy ?? 0;
+    if (!roleMentioned && corroboratedBy === 0) continue;
 
     let score = companyInTitle ? 40 : 25;
     if (exactInTitle) score += 45;
     else if (synonymInTitle) score += 32;
     else if (exactInSnippet) score += 20;
-    else score += 14;
+    else if (roleMentioned) score += 14;
+    // Named in the role by independent sources: strong evidence even if the headline is terse.
+    if (corroboratedBy > 0) score = Math.max(score + 35, 80);
+    // Claims the title while independent sources name someone else: likely self-declared.
+    const unconfirmed = evidenceNamesSomeone && corroboratedBy === 0;
+    if (unconfirmed) score = Math.min(score, 40);
 
     const former = mentionsFormerRole(headline, ctx) || mentionsFormerRole(candidate.snippet, ctx);
     if (former) score -= 45;
@@ -98,9 +107,13 @@ export function rankHeuristically(candidates: Candidate[], ctx: RankingContext):
       ? `Mentions ${matched} at ${ctx.companyName}, but looks like a former role.`
       : lookalike
         ? `Mentions ${matched}, but possibly at a different company with a similar name.`
-        : junior
-          ? `Related title (${headline.split(' - ')[0] ?? matched}) at ${ctx.companyName}, not necessarily the main ${ctx.position}.`
-          : `${exactInTitle || synonymInTitle ? 'Headline' : 'Search snippet'} mentions ${matched} at ${ctx.companyName}.`;
+        : corroboratedBy > 0
+          ? `Named as ${ctx.position} at ${ctx.companyName} by ${corroboratedBy} independent web sources.`
+          : unconfirmed
+            ? `Claims ${matched} at ${ctx.companyName}, but independent sources name someone else.`
+            : junior
+              ? `Related title (${headline.split(' - ')[0] ?? matched}) at ${ctx.companyName}, not necessarily the main ${ctx.position}.`
+              : `${exactInTitle || synonymInTitle ? 'Headline' : 'Search snippet'} mentions ${matched} at ${ctx.companyName}.`;
 
     scored.push({ fullName: name, headline, linkedinUrl: candidate.linkedinUrl, confidence, reasoning });
   }

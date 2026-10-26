@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createSearchHandler } from '../netlify/functions/_lib/handler';
 import { createMemoryStore, type MemoryStore } from '../shared/memoryStore';
+import { performSearch } from '../shared/searchService';
 import { createMockHomepageFetcher, createMockLlmClient, createMockSearchProvider } from '../shared/mocks';
 import type { SearchResponse } from '../shared/types';
 
@@ -136,6 +137,41 @@ describe('search function handler', () => {
     const body = (await (await post({ companyUrl: 'stripe.com', position: 'CFO' })).json()) as SearchResponse;
     expect(body.fromCache).toBe(false);
     expect(body.results.length).toBeGreaterThan(0);
+  });
+
+  it('ignores cache entries written before the pipeline last changed (cacheValidAfter)', async () => {
+    const fixedNow = new Date('2026-10-26T12:00:00Z');
+    const outcome = await performSearch(
+      USER_A,
+      { companyUrl: 'stripe.com', position: 'CFO' },
+      {
+        store,
+        pipelineDeps: {
+          searchProvider: createMockSearchProvider({ latencyScale: 0 }),
+          fetchHomepage: createMockHomepageFetcher({ latencyScale: 0 }),
+          llm: createMockLlmClient({ latencyScale: 0 }),
+        },
+        config: { maxSearchesPerHour: 3, cacheTtlMs: 7 * 24 * 3600 * 1000, cacheValidAfter: fixedNow.getTime() + 60_000 },
+        now: () => fixedNow,
+      },
+    );
+    // Written "now", i.e. before the cut-off: a repeat must not be served from it.
+    expect(outcome.status).toBe(200);
+    const again = await performSearch(
+      USER_A,
+      { companyUrl: 'stripe.com', position: 'CFO' },
+      {
+        store,
+        pipelineDeps: {
+          searchProvider: createMockSearchProvider({ latencyScale: 0 }),
+          fetchHomepage: createMockHomepageFetcher({ latencyScale: 0 }),
+          llm: createMockLlmClient({ latencyScale: 0 }),
+        },
+        config: { maxSearchesPerHour: 3, cacheTtlMs: 7 * 24 * 3600 * 1000, cacheValidAfter: fixedNow.getTime() + 60_000 },
+        now: () => fixedNow,
+      },
+    );
+    expect(again.status === 200 && again.body.fromCache).toBe(false);
   });
 
   it('does not cache heuristic fallback results', async () => {

@@ -20,7 +20,10 @@ export function createPipelineDeps(env: FunctionEnv): PipelineDeps {
   return {
     searchProvider: createSearchProvider(env),
     fetchHomepage: createHomepageFetcher(),
-    // No key → the heuristic ranker is used automatically.
+    // No key → the heuristic ranker is used automatically. On Netlify, the AI Gateway injects
+    // ANTHROPIC_API_KEY (and ANTHROPIC_BASE_URL, read by the SDK) unless you set your own.
     llm: env.anthropicApiKey ? createAnthropicClient(env.anthropicApiKey, env.anthropicModel, env.anthropicEffort) : null,
+    // Cross-check LinkedIn headlines with independent web sources (see shared/corroboration.ts).
+    corroborate: true,
   };
 }

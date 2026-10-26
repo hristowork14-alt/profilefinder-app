@@ -16,6 +16,8 @@ export interface Candidate {
   linkedinUrl: string;
   /** Lowercase, decoded slug used for de-duplication. */
   slug: string;
+  /** How many independent (non-LinkedIn) sources name this person in the role. Only set when corroboration ran. */
+  corroboratedBy?: number;
 }
 
 /** One ranked profile, as shown to the user. */
@@ -34,6 +36,8 @@ export interface RankingContext {
   domain: string;
   position: string;
   synonyms: string[];
+  /** People that independent web sources name as holding the role (empty or absent = no evidence). */
+  evidence?: { name: string; sources: number }[];
 }
 
 export type RankedBy = 'claude' | 'heuristic';

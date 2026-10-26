@@ -2,11 +2,13 @@
 // Pure orchestration; every external call is injected (real or mock) and time-boxed.
 
 import { resolveCompanyName } from './companyName';
+import { corroborationFor, extractNamedPeople, type EvidenceName } from './corroboration';
 import { Deadline, withTimeout } from './deadline';
-import { rankHeuristically } from './heuristicRanker';
+import { domainToCompanyName } from './domain';
+import { parseLinkedInTitle, rankHeuristically } from './heuristicRanker';
 import { normalizeLinkedInProfileUrl } from './linkedinUrl';
 import { findSynonyms } from './positionSynonyms';
-import { buildDomainQuery, buildNameQueries } from './queryBuilder';
+import { buildDomainQuery, buildEvidenceQuery, buildNameQueries, buildPersonQuery } from './queryBuilder';
 import { rankWithClaude } from './rankWithClaude';
 import type {
   Candidate,
@@ -49,6 +51,11 @@ export interface PipelineDeps {
   searchProvider: SearchProvider;
   fetchHomepage: HomepageFetcher;
   llm: LlmClient | null;
+  /**
+   * Cross-check LinkedIn results with an ordinary web search (see corroboration.ts). Costs up to
+   * 2 extra search queries. On in the real app; off in the demo and with USE_MOCKS.
+   */
+  corroborate?: boolean;
   timing?: Partial<PipelineTiming>;
   onProgress?: (step: PipelineStep) => void;
   log?: (message: string) => void;
@@ -65,9 +72,13 @@ export interface PipelineResult {
   results: RankedProfile[];
   rankedBy: RankedBy;
   searchErrors: number;
+  /** People independent sources name in the role ([] when corroboration is off or found nobody). */
+  evidence: EvidenceName[];
 }
 
 const RESULTS_PER_QUERY = 10;
+/** Look up at most this many evidence-named people on LinkedIn. */
+const MAX_PERSON_QUERIES = 2;
 
 export function filterAndDedupe(hits: SearchHit[]): Candidate[] {
   const bySlug = new Map<string, Candidate>();
@@ -112,28 +123,69 @@ export async function runSearchPipeline(input: { domain: string; position: strin
     log(`Homepage fetch failed for ${domain}: ${error instanceof Error ? error.message : String(error)}`);
     return null;
   });
+  // Independent evidence (optional) starts at the same time, with the name derived from the domain.
+  const evidenceQuery = deps.corroborate ? buildEvidenceQuery(domainToCompanyName(domain), position) : null;
+  let evidenceFailed = false;
+  // The failure handler is attached right away, so an early failure is never an unhandled rejection.
+  const evidenceSearch = evidenceQuery
+    ? runQuery(evidenceQuery, timing.minLlmMs).catch((error: unknown) => {
+        evidenceFailed = true;
+        log(`Evidence query failed (${evidenceQuery}): ${error instanceof Error ? error.message : String(error)}`);
+        return [] as SearchHit[];
+      })
+    : null;
   const company = resolveCompanyName(await homepage, domain);
 
-  // 2) Name-based queries, in parallel with whatever is left of the domain query.
+  // 2) Name-based queries, in parallel with whatever is left of the domain query. When evidence
+  //    names someone, their LinkedIn profile is looked up too, as soon as the evidence arrives.
   deps.onProgress?.('search');
   const nameQueries = buildNameQueries(company.name, position, synonyms);
-  const settled = await Promise.allSettled([...nameQueries.map((q) => runQuery(q, timing.minLlmMs)), domainSearch]);
-  const queries = [...nameQueries, domainQuery];
+  const linkedinQueries = [...nameQueries, domainQuery];
+  let evidence: EvidenceName[] = [];
+  const personQueries: string[] = [];
+  const personSearch: Promise<SearchHit[]> = evidenceSearch
+    ? evidenceSearch.then(async (evidenceHits) => {
+        evidence = extractNamedPeople(evidenceHits, { companyName: company.name, domain, position, synonyms });
+        personQueries.push(...evidence.slice(0, MAX_PERSON_QUERIES).map((e) => buildPersonQuery(e.name, company.name)));
+        const found = await Promise.allSettled(personQueries.map((q) => runQuery(q, timing.minLlmMs)));
+        return found.flatMap((outcome, index) => {
+          if (outcome.status === 'fulfilled') return outcome.value;
+          log(
+            `Query failed (${personQueries[index]}): ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`,
+          );
+          return [];
+        });
+      })
+    : Promise.resolve([]);
+  const [settled, personHits] = await Promise.all([
+    Promise.allSettled([...nameQueries.map((q) => runQuery(q, timing.minLlmMs)), domainSearch]),
+    personSearch,
+  ]);
 
-  const hits: SearchHit[] = [];
+  // Profiles found by name (from independent evidence) go first, so they're never cut off by the
+  // candidate limit in the ranking prompt.
+  const hits: SearchHit[] = [...personHits];
   let searchErrors = 0;
   settled.forEach((outcome, index) => {
     if (outcome.status === 'fulfilled') hits.push(...outcome.value);
     else {
       searchErrors++;
-      log(`Query failed (${queries[index]}): ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`);
+      log(`Query failed (${linkedinQueries[index]}): ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`);
     }
   });
   if (searchErrors === settled.length) throw new SearchUnavailableError();
+  // A failed evidence query doesn't stop the search, but the answer is incomplete (not cached).
+  if (evidenceFailed) searchErrors++;
 
+  const queries = [...linkedinQueries, ...(evidenceQuery ? [evidenceQuery] : []), ...personQueries];
   const candidates = filterAndDedupe(hits);
-  const ctx = { companyName: company.name, domain, position, synonyms };
-  const base = { domain, position, companyName: company.name, companySource: company.source, queries, candidates, searchErrors };
+  if (deps.corroborate) {
+    for (const candidate of candidates) {
+      candidate.corroboratedBy = corroborationFor(parseLinkedInTitle(candidate.title).name, evidence);
+    }
+  }
+  const ctx = { companyName: company.name, domain, position, synonyms, ...(deps.corroborate ? { evidence } : {}) };
+  const base = { domain, position, companyName: company.name, companySource: company.source, queries, candidates, searchErrors, evidence };
 
   // 3) Rank — Claude if available and there's time, otherwise the heuristic.
   deps.onProgress?.('rank');

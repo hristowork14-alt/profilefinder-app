@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { findSynonyms, normalizePosition } from '../shared/positionSynonyms';
-import { buildDomainQuery, buildNameQueries } from '../shared/queryBuilder';
+import { buildDomainQuery, buildEvidenceQuery, buildNameQueries, buildPersonQuery } from '../shared/queryBuilder';
 
 describe('normalizePosition', () => {
   it('lowercases, trims and collapses whitespace and punctuation', () => {
@@ -44,6 +44,15 @@ describe('query building', () => {
 
   it('builds a single name query when there are no synonyms', () => {
     expect(buildNameQueries('Acme', 'Chief Happiness Wizard', [])).toEqual(['site:linkedin.com/in "Acme" "Chief Happiness Wizard"']);
+  });
+
+  it('builds the independent-evidence web query, excluding LinkedIn', () => {
+    expect(buildEvidenceQuery('Cloudflare', 'CTO')).toBe('"Cloudflare" "CTO" -site:linkedin.com');
+  });
+
+  it('builds the LinkedIn query for a person named by independent sources', () => {
+    expect(buildPersonQuery('Dane Knecht', 'Cloudflare')).toBe('site:linkedin.com/in "Dane Knecht" "Cloudflare"');
+    expect(buildPersonQuery('Dane "x" Knecht', 'Cloud"flare')).toBe('site:linkedin.com/in "Dane x Knecht" "Cloudflare"');
   });
 
   it('strips quotes and search operators from user input', () => {

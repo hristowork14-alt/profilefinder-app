@@ -23,6 +23,12 @@ export interface FunctionEnv {
 
 export const DEFAULT_ANTHROPIC_MODEL = 'claude-haiku-5-5';
 export const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * Cached results written before this moment are ignored: they came from an older pipeline that
+ * could rank self-declared LinkedIn profiles first (before independent corroboration was added).
+ * Bump this whenever the way results are found or ranked changes.
+ */
+export const CACHE_VALID_AFTER = Date.parse('2026-10-26T10:20:00Z');
 
 type EnvSource = Record<string, string | undefined>;
 

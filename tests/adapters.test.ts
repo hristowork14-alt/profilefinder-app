@@ -35,6 +35,51 @@ describe('Serper adapter', () => {
     expect(JSON.parse(String(seen!.init.body))).toEqual({ q: 'site:linkedin.com/in "Stripe" "CFO"', num: 10 });
   });
 
+  it('also returns the answer box, knowledge graph and "People also ask" as extra hits after the organic ones', async () => {
+    const fakeFetch = (async () =>
+      new Response(
+        JSON.stringify({
+          answerBox: {
+            title: 'Northwind / CTO',
+            answer: 'Mara Velin',
+            snippet: 'Mara Velin is the CTO of Northwind.',
+            link: 'https://a.example',
+          },
+          knowledgeGraph: { title: 'Northwind', description: 'Cloud company.', attributes: { CTO: 'Mara Velin', Founded: '2009' } },
+          peopleAlsoAsk: [
+            { question: 'Who is the CTO of Northwind?', snippet: 'Mara Velin has been CTO since 2025.', link: 'https://b.example' },
+          ],
+          organic: [
+            { title: 'One', link: 'https://one.example', snippet: 's1' },
+            { title: 'Two', link: 'https://two.example', snippet: 's2' },
+            { title: 'Three', link: 'https://three.example', snippet: 's3' },
+          ],
+        }),
+        { status: 200 },
+      )) as typeof fetch;
+
+    const hits = await createSerperProvider('k', fakeFetch).search('"Northwind" "CTO" -site:linkedin.com', { signal: signal(), limit: 2 });
+    // The organic limit is respected; extras come after and never displace organic results.
+    expect(hits.map((h) => h.url)).toEqual([
+      'https://one.example',
+      'https://two.example',
+      'https://a.example',
+      'https://serper.dev/knowledge-graph',
+      'https://b.example',
+    ]);
+    expect(hits[2]).toEqual({
+      title: 'Northwind / CTO',
+      snippet: 'Mara Velin — Mara Velin is the CTO of Northwind.',
+      url: 'https://a.example',
+    });
+    expect(hits[3]?.snippet).toBe('Cloud company. CTO: Mara Velin. Founded: 2009');
+    expect(hits[4]).toEqual({
+      title: 'Who is the CTO of Northwind?',
+      snippet: 'Mara Velin has been CTO since 2025.',
+      url: 'https://b.example',
+    });
+  });
+
   it('throws a SearchProviderError on HTTP errors', async () => {
     const fakeFetch = (async () => new Response('nope', { status: 403 })) as typeof fetch;
     await expect(createSerperProvider('bad', fakeFetch).search('q', { signal: signal(), limit: 10 })).rejects.toBeInstanceOf(

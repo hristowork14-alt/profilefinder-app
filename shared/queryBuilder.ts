@@ -19,6 +19,19 @@ export function buildDomainQuery(domain: string, position: string): string {
   return `${SITE} ${quote(domain)} ${quote(position)}`;
 }
 
+/**
+ * Independent evidence: an ordinary web search for who holds the role, with LinkedIn excluded,
+ * so self-declared LinkedIn headlines can't dominate it. Only read as text (see corroboration.ts).
+ */
+export function buildEvidenceQuery(companyName: string, position: string): string {
+  return `${quote(companyName)} ${quote(position)} -site:linkedin.com`;
+}
+
+/** Finds the LinkedIn profile of a person that independent sources named. */
+export function buildPersonQuery(personName: string, companyName: string): string {
+  return `${SITE} ${quote(personName)} ${quote(companyName)}`;
+}
+
 /** Queries 1 and 2 — company name + position, and company name + the first synonym. */
 export function buildNameQueries(companyName: string, position: string, synonyms: string[]): string[] {
   const queries = [`${SITE} ${quote(companyName)} ${quote(position)}`];

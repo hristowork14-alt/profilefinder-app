@@ -4,7 +4,7 @@
 
 import type { Context } from '@netlify/functions';
 import { createAuthenticator } from './_lib/auth';
-import { CACHE_TTL_MS, ConfigError, readEnv } from './_lib/env';
+import { CACHE_TTL_MS, CACHE_VALID_AFTER, ConfigError, readEnv } from './_lib/env';
 import { createSearchHandler } from './_lib/handler';
 import { errorResponse } from './_lib/http';
 import { createPipelineDeps, log } from './_lib/runtime';
@@ -22,7 +22,7 @@ export default async (req: Request, _context: Context): Promise<Response> => {
       authenticate: createAuthenticator(admin),
       store: createSupabaseStore(admin),
       pipelineDeps: () => createPipelineDeps(env),
-      config: { maxSearchesPerHour: env.maxSearchesPerHour, cacheTtlMs: CACHE_TTL_MS },
+      config: { maxSearchesPerHour: env.maxSearchesPerHour, cacheTtlMs: CACHE_TTL_MS, cacheValidAfter: CACHE_VALID_AFTER },
       log,
     });
     return await handler(req);

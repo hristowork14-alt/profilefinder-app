@@ -10,6 +10,11 @@ import { validateSearchRequest } from './validation';
 export interface SearchServiceConfig {
   maxSearchesPerHour: number;
   cacheTtlMs: number;
+  /**
+   * Epoch ms. Cache entries written before this are ignored, because they came from an older,
+   * less accurate pipeline. Bump it whenever the way results are found or ranked changes.
+   */
+  cacheValidAfter?: number;
 }
 
 export const NO_RESULTS_MESSAGE = 'No matching profiles found — try a broader title.';
@@ -49,8 +54,10 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
 
   // 1) Cache — served even when the user is over the hourly limit.
   let cached = null;
+  const maxAgeMs =
+    config.cacheValidAfter === undefined ? config.cacheTtlMs : Math.min(config.cacheTtlMs, now().getTime() - config.cacheValidAfter);
   try {
-    cached = await store.getCached(input.domain, input.positionNormalized, config.cacheTtlMs);
+    if (maxAgeMs > 0) cached = await store.getCached(input.domain, input.positionNormalized, maxAgeMs);
   } catch (error) {
     log(`Cache read failed: ${error instanceof Error ? error.message : String(error)}`);
   }

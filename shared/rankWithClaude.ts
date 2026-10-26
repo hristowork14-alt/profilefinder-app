@@ -32,12 +32,26 @@ Rules:
 Reply with JSON only, no prose, exactly in this shape:
 {"results":[{"fullName":"...","headline":"...","linkedinUrl":"...","confidence":0,"reasoning":"..."}]}`;
 
+/** Only added when corroboration ran (real app), so demo prompts are unchanged. */
+function evidenceSection(ctx: RankingContext): string[] {
+  if (!ctx.evidence) return [];
+  const named = ctx.evidence.map((e) => `${e.name} (${e.sources} sources)`).join(', ');
+  return [
+    '',
+    `Independent web sources (company sites, press, news — not LinkedIn) that name who holds this position: ${named || 'none found'}`,
+    'Anyone can type any title into their own LinkedIn headline, so a headline alone proves little.',
+    '- If independent sources name someone, the matching candidate (namedByIndependentSources > 0) is very likely the real holder: rank them first. Give a candidate who only claims the title while the sources name someone else at most 40 confidence.',
+    '- If they name nobody, judge from the profile text, and be cautious with thin profiles (no location, no other experience, few followers or connections) at large companies: at most 60 confidence.',
+  ];
+}
+
 export function buildRankingPrompt(candidates: Candidate[], ctx: RankingContext): { system: string; prompt: string } {
   const list = candidates.slice(0, MAX_CANDIDATES).map((c, index) => ({
     id: index + 1,
     title: c.title.slice(0, 200),
     snippet: c.snippet.slice(0, MAX_SNIPPET),
     linkedinUrl: c.linkedinUrl,
+    ...(c.corroboratedBy !== undefined ? { namedByIndependentSources: c.corroboratedBy } : {}),
   }));
 
   const prompt = [
@@ -45,6 +59,7 @@ export function buildRankingPrompt(candidates: Candidate[], ctx: RankingContext)
     `Company website: ${ctx.domain}`,
     `Position: ${ctx.position}`,
     ctx.synonyms.length ? `Equivalent titles: ${ctx.synonyms.join(', ')}` : 'Equivalent titles: none',
+    ...evidenceSection(ctx),
     '',
     'Candidates (from web search results):',
     CANDIDATES_OPEN,

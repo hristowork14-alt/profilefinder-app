@@ -81,6 +81,12 @@ describe('runSearchPipeline with mock providers', () => {
     expect(result.rankedBy).toBe('heuristic');
   });
 
+  it('does not add evidence queries unless corroboration is switched on (demo and mocks unchanged)', async () => {
+    const result = await runSearchPipeline({ domain: 'nimbus-labs.example', position: 'CTO' }, fastMocks());
+    expect(result.queries.every((q) => q.startsWith('site:linkedin.com/in'))).toBe(true);
+    expect(result.evidence).toEqual([]);
+  });
+
   it('times out a hanging search query without failing the others', async () => {
     const hits: SearchHit[] = [
       { title: 'Jane Doe - CTO - Acme | LinkedIn', snippet: 'CTO at Acme', url: 'https://www.linkedin.com/in/jane-doe' },
@@ -103,5 +109,79 @@ describe('runSearchPipeline with mock providers', () => {
     );
     expect(result.searchErrors).toBe(1);
     expect(result.results[0]?.fullName).toBe('Jane Doe');
+  });
+});
+
+// What production showed for cloudflare.com + CTO, with fictional people: the title queries
+// only return self-declared profiles, while the open web names the real holder.
+describe('runSearchPipeline with corroboration', () => {
+  const evidenceHits: SearchHit[] = [
+    {
+      title: "Who is the CTO of Northwind in 2026? Mara Velin's Bio",
+      snippet: 'Mara Velin is the Chief Technology Officer of Northwind.',
+      url: 'https://dossier.example/a',
+    },
+    {
+      title: 'Northwind names Mara Velin Chief Technology Officer',
+      snippet: 'Northwind today announced that Mara Velin has become CTO.',
+      url: 'https://news.example/b',
+    },
+  ];
+  const selfDeclared: SearchHit = {
+    title: 'zed fakeman - Chief Technology Officer at Northwind | LinkedIn',
+    snippet: 'Chief Technology Officer at Northwind · Experience: Northwind · Location: Nowhere · 1 follower',
+    url: 'https://www.linkedin.com/in/zed-fakeman-57a92138b',
+  };
+  const realProfile: SearchHit = {
+    title: 'Mara Velin - Northwind | LinkedIn',
+    snippet: 'Experience: Northwind · Location: San Francisco · 500+ connections on LinkedIn.',
+    url: 'https://www.linkedin.com/in/maravelin',
+  };
+
+  const provider = (seen: string[]): SearchProvider => ({
+    name: 'test',
+    search: async (query) => {
+      seen.push(query);
+      if (query.includes('-site:linkedin.com')) return evidenceHits;
+      if (query.includes('"Mara Velin"')) return [realProfile];
+      return [selfDeclared];
+    },
+  });
+
+  const run = (seen: string[], llm: LlmClient | null = null) =>
+    runSearchPipeline(
+      { domain: 'northwind.com', position: 'CTO' },
+      { searchProvider: provider(seen), fetchHomepage: async () => '<title>Northwind</title>', llm, corroborate: true },
+    );
+
+  it('looks up the person independent sources name, and ranks them above a self-declared profile', async () => {
+    const seen: string[] = [];
+    const result = await run(seen);
+    expect(seen).toContain('"Northwind" "CTO" -site:linkedin.com');
+    expect(seen).toContain('site:linkedin.com/in "Mara Velin" "Northwind"');
+    expect(result.evidence).toEqual([{ name: 'Mara Velin', sources: 2 }]);
+    expect(result.results[0]?.fullName).toBe('Mara Velin');
+    expect(result.results[0]?.linkedinUrl).toBe('https://www.linkedin.com/in/maravelin');
+    const fake = result.results.find((r) => r.fullName === 'zed fakeman');
+    expect(fake === undefined || fake.confidence < 50).toBe(true);
+  });
+
+  it('tells Claude which candidates independent sources confirm', async () => {
+    const prompts: string[] = [];
+    const llm: LlmClient = {
+      complete: async ({ prompt }) => {
+        prompts.push(prompt);
+        return JSON.stringify({
+          results: [
+            { fullName: 'Mara Velin', headline: 'Northwind', linkedinUrl: realProfile.url, confidence: 92, reasoning: 'Named by sources.' },
+          ],
+        });
+      },
+    };
+    const result = await run([], llm);
+    expect(result.rankedBy).toBe('claude');
+    expect(prompts[0]).toMatch(/Independent web sources/);
+    expect(prompts[0]).toMatch(/Mara Velin \(2 sources\)/);
+    expect(prompts[0]).toMatch(/"namedByIndependentSources": 2/);
   });
 });
