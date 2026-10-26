@@ -422,7 +422,7 @@ export async function runSearchPipeline(input: { domain: string; position: strin
       trace.timings.totalMs = clock() - startedAt;
       return { ...base, results, rankedBy };
     }
-    const decided = decideResults(results, candidates, verifiedHolder, ctx);
+    const decided = decideResults(results, candidates, verifiedHolder, ctx, { rankerReadProfiles: rankedBy === 'claude' });
     trace.decision = decided.decision;
     trace.timings.totalMs = clock() - startedAt;
     return { ...base, results: decided.results, rankedBy, verifiedHolder: decided.verifiedHolder };

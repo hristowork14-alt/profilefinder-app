@@ -78,6 +78,21 @@ describe('decideResults', () => {
     expect(decideResults([], [{ ...bare, foundWithCompany: false }], holder, ctx).decision).toBe('verified_no_profile');
   });
 
+  // Production 2026-10-26 (imagga.com + CTO): sources named him, but Claude read his profile as
+  // showing he had moved on — and the profile was still shown as "verified, 98".
+  it('when Claude reads the matching profile as contradicting the sources, shows it unverified with its own score', () => {
+    const doubt = {
+      ...ranked('Andy Corwin', real.linkedinUrl, 30),
+      reasoning: 'Now CTO at another company; Orbitly is in the past tense.',
+    };
+    const out = decideResults([doubt], [real], holder, ctx, { rankerReadProfiles: true });
+    expect(out.decision).toBe('contradicted');
+    expect(out.verifiedHolder).toBeNull();
+    expect(out.results).toEqual([{ ...doubt, verified: false }]);
+    // The heuristic ranker's low score is not a reading of the profile: it doesn't count as doubt.
+    expect(decideResults([doubt], [real], holder, ctx).decision).toBe('verified_profile');
+  });
+
   it('verified holder without a findable profile: no profiles at all, holder card only', () => {
     const out = decideResults([ranked('zed fakeman', fake.linkedinUrl, 20)], [fake], holder, ctx);
     expect(out.decision).toBe('verified_no_profile');

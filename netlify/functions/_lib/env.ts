@@ -28,7 +28,7 @@ export const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  * could show self-declared LinkedIn profiles (before multi-strategy verification).
  * Bump this whenever the way results are found or ranked changes.
  */
-export const CACHE_VALID_AFTER = Date.parse('2026-10-26T14:50:00Z');
+export const CACHE_VALID_AFTER = Date.parse('2026-10-26T15:00:00Z');
 
 type EnvSource = Record<string, string | undefined>;
 
