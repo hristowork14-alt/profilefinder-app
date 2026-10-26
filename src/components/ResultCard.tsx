@@ -6,9 +6,20 @@ import { copyToClipboard } from '@/lib/utils';
 import { Button } from './ui/Button';
 import { buttonClasses } from './ui/buttonStyles';
 import { ConfidenceBadge } from './ConfidenceBadge';
+import { VerifiedBadge } from './VerifiedHolderCard';
 
 /** One ranked person. Rendered as a row in a ranked list, not a floating card. */
-export function ResultCard({ result, rank, animate = false }: { result: RankedProfile; rank: number; animate?: boolean }) {
+export function ResultCard({
+  result,
+  rank,
+  animate = false,
+  verifiedSources,
+}: {
+  result: RankedProfile;
+  rank: number;
+  animate?: boolean;
+  verifiedSources?: number;
+}) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -30,6 +41,11 @@ export function ResultCard({ result, rank, animate = false }: { result: RankedPr
         <div className="min-w-0">
           <h3 className="text-lg leading-snug font-semibold break-words">{result.fullName}</h3>
           {result.headline && <p className="mt-0.5 text-[15px] break-words text-muted">{result.headline}</p>}
+          {result.verified && (
+            <div className="mt-2">
+              <VerifiedBadge sources={verifiedSources} />
+            </div>
+          )}
         </div>
         <ConfidenceBadge confidence={result.confidence} className="col-start-2 items-start sm:col-start-3 sm:row-start-1 sm:items-end" />
         <div className="col-start-2 flex flex-col gap-3 sm:col-span-2">
@@ -50,11 +66,19 @@ export function ResultCard({ result, rank, animate = false }: { result: RankedPr
   );
 }
 
-export function ResultList({ results, animate = false }: { results: RankedProfile[]; animate?: boolean }) {
+export function ResultList({
+  results,
+  animate = false,
+  verifiedSources,
+}: {
+  results: RankedProfile[];
+  animate?: boolean;
+  verifiedSources?: number;
+}) {
   return (
     <ol className="divide-y divide-line border-y border-line">
       {results.map((result, index) => (
-        <ResultCard key={result.linkedinUrl} result={result} rank={index + 1} animate={animate} />
+        <ResultCard key={result.linkedinUrl} result={result} rank={index + 1} animate={animate} verifiedSources={verifiedSources} />
       ))}
     </ol>
   );

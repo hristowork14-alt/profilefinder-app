@@ -61,8 +61,10 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
   } catch (error) {
     log(`Cache read failed: ${error instanceof Error ? error.message : String(error)}`);
   }
-  // An empty cached answer is ignored (older versions cached them), so the company is searched again.
-  if (cached && cached.results.length > 0) {
+  // An empty cached answer is ignored (older versions cached them), so the company is searched
+  // again — unless it carries a verified holder (a real answer: "X holds it, no public profile").
+  if (cached && (cached.results.length > 0 || cached.verifiedHolder)) {
+    const answered = cached.results.length > 0 || Boolean(cached.verifiedHolder);
     const searchId = await save({
       userId,
       bulkJobId: input.bulkJobId,
@@ -70,10 +72,11 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
       domain: input.domain,
       companyName: cached.companyName,
       position: input.position,
-      status: cached.results.length ? 'completed' : 'no_results',
+      status: answered ? 'completed' : 'no_results',
       error: null,
       fromCache: true,
       results: cached.results,
+      ...(cached.verifiedHolder !== undefined ? { verifiedHolder: cached.verifiedHolder } : {}),
     });
     return {
       status: 200,
@@ -85,7 +88,8 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
         results: cached.results,
         fromCache: true,
         rankedBy: 'cache',
-        message: cached.results.length === 0 ? NO_RESULTS_MESSAGE : searchId ? null : NOT_SAVED_MESSAGE,
+        message: !answered ? NO_RESULTS_MESSAGE : searchId ? null : NOT_SAVED_MESSAGE,
+        ...(cached.verifiedHolder !== undefined ? { verifiedHolder: cached.verifiedHolder } : {}),
       },
     };
   }
@@ -126,7 +130,14 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
     return { status: 502, body: { error: message, code: 'search_failed' } };
   }
 
-  // 4) Save to history.
+  // One summary line per search for the function logs — no personal data (no names).
+  const { trace } = result;
+  log(
+    `search ${input.domain} "${input.position}" | ${trace.decision} | ${trace.timings.totalMs} ms | ${trace.queries.length} queries | extraction ${trace.extraction} | ${result.results.length} results`,
+  );
+
+  // 4) Save to history (with the diagnostics, stored server-side only).
+  const answered = result.results.length > 0 || Boolean(result.verifiedHolder);
   const searchId = await save({
     userId,
     bulkJobId: input.bulkJobId,
@@ -134,17 +145,19 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
     domain: input.domain,
     companyName: result.companyName,
     position: input.position,
-    status: result.results.length ? 'completed' : 'no_results',
+    status: answered ? 'completed' : 'no_results',
     error: null,
     fromCache: false,
     results: result.results,
+    ...(result.verifiedHolder !== undefined ? { verifiedHolder: result.verifiedHolder } : {}),
+    diagnostics: trace,
   });
 
   // 5) Cache only complete, best-quality answers: all queries succeeded, the results came from
-  //    Claude (or no model is configured at all), and something was found. A heuristic fallback is
-  //    not cached so the next attempt can get Claude's ranking, and an empty answer is not cached so
-  //    a temporary miss doesn't stick for the whole cache window.
-  const cacheable = result.searchErrors === 0 && result.results.length > 0 && (result.rankedBy === 'claude' || !deps.pipelineDeps.llm);
+  //    Claude (or no model is configured at all), and there is an answer (profiles, or a verified
+  //    holder without a public profile). A heuristic fallback is not cached so the next attempt can
+  //    get Claude's ranking, and an empty answer is not cached so a temporary miss doesn't stick.
+  const cacheable = result.searchErrors === 0 && answered && (result.rankedBy === 'claude' || !deps.pipelineDeps.llm);
   if (cacheable) {
     try {
       await store.putCached({
@@ -152,6 +165,7 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
         positionNormalized: input.positionNormalized,
         companyName: result.companyName,
         results: result.results,
+        ...(result.verifiedHolder !== undefined ? { verifiedHolder: result.verifiedHolder } : {}),
       });
     } catch (error) {
       log(`Cache write failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -168,7 +182,8 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
       results: result.results,
       fromCache: false,
       rankedBy: result.rankedBy,
-      message: result.results.length === 0 ? NO_RESULTS_MESSAGE : searchId ? null : NOT_SAVED_MESSAGE,
+      message: !answered ? NO_RESULTS_MESSAGE : searchId ? null : NOT_SAVED_MESSAGE,
+      ...(result.verifiedHolder !== undefined ? { verifiedHolder: result.verifiedHolder } : {}),
     },
   };
 }

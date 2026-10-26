@@ -29,6 +29,23 @@ export interface RankedProfile {
   confidence: number;
   /** One sentence */
   reasoning: string;
+  /** True when independent sources name this person in the role. Only set when verification ran. */
+  verified?: boolean;
+}
+
+/** A search-result page that names the holder (title + URL only; never fetched). */
+export interface SourceLink {
+  title: string;
+  url: string;
+}
+
+/** The person independent (non-LinkedIn) sources name as holding the role. */
+export interface VerifiedHolder {
+  name: string;
+  /** Distinct supporting sources; one on the company's own domain counts double. */
+  sources: number;
+  /** Up to 3, official sources first. */
+  sourceLinks: SourceLink[];
 }
 
 export interface RankingContext {
@@ -82,6 +99,11 @@ export interface SearchResponse {
   fromCache: boolean;
   rankedBy: RankedBy | 'cache';
   message: string | null;
+  /**
+   * Only present when verification ran (real app): the verified holder, or null when no one could
+   * be confirmed. Absent in the demo.
+   */
+  verifiedHolder?: VerifiedHolder | null;
 }
 
 /** Error body returned by the search endpoint. */

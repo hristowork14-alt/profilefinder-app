@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractNamedPeople, namesMatch } from '../shared/corroboration';
+import { evidenceRoleTerms, extractNamedPeople, nameVariants, namesMatch } from '../shared/corroboration';
 import type { RankingContext, SearchHit } from '../shared/types';
 
 // Fictional people in the real formats Google shows for "<Company> <role>" (dossier pages,
@@ -28,7 +28,7 @@ const hits: SearchHit[] = [
 describe('extractNamedPeople', () => {
   it('finds the person named next to the role in several independent sources', () => {
     const people = extractNamedPeople(hits, ctx);
-    expect(people[0]).toEqual({ name: 'Mara Velin', sources: 2 });
+    expect(people[0]).toMatchObject({ name: 'Mara Velin', sources: 2 });
   });
 
   it('skips names introduced as former holders', () => {
@@ -54,7 +54,7 @@ describe('extractNamedPeople', () => {
       ],
       ctx,
     );
-    expect(people[0]).toEqual({ name: 'Žofia Dvořáková', sources: 2 });
+    expect(people[0]).toMatchObject({ name: 'Žofia Dvořáková', sources: 2 });
   });
 });
 
@@ -69,5 +69,97 @@ describe('namesMatch', () => {
     expect(namesMatch('Mara Velin', 'Mara Stone')).toBe(false);
     expect(namesMatch('Jon Velin', 'Mara Velin')).toBe(false);
     expect(namesMatch('Mara', 'Mara Velin')).toBe(false);
+  });
+
+  // Production: sources said "Andy …" while a profile may say "Andrew …" (and vice versa).
+  it('matches common nickname forms of the first name', () => {
+    expect(namesMatch('Andy Corwin', 'Andrew Corwin')).toBe(true);
+    expect(namesMatch('Bill Ostrander', 'William Ostrander')).toBe(true);
+    expect(namesMatch('Ellie Marsh', 'Elinor Marsh')).toBe(true);
+    expect(namesMatch('Kate Brennan', 'Katherine Brennan')).toBe(true);
+    expect(namesMatch('Andy Corwin', 'Andrea Corwin')).toBe(false);
+  });
+
+  it('handles "Last, First", initials and possessives', () => {
+    expect(namesMatch('Corwin, Andy', 'Andy Corwin')).toBe(true);
+    expect(namesMatch('Andy R. Corwin', 'Andy Corwin')).toBe(true);
+    expect(namesMatch("Mara Velin's", 'Mara Velin')).toBe(true);
+  });
+});
+
+describe('evidenceRoleTerms', () => {
+  it('keeps only exact equivalents (abbreviation ↔ full title), not looser related titles', () => {
+    expect(evidenceRoleTerms('CEO', ['Chief Executive Officer', 'Founder', 'Co-Founder', 'Managing Director'])).toEqual([
+      'CEO',
+      'Chief Executive Officer',
+    ]);
+    expect(evidenceRoleTerms('Chief Financial Officer', ['CFO', 'VP Finance', 'Finance Director'])).toEqual([
+      'Chief Financial Officer',
+      'CFO',
+    ]);
+    expect(evidenceRoleTerms('Head of Engineering', ['CTO', 'Chief Technology Officer', 'VP Engineering'])).toEqual([
+      'Head of Engineering',
+    ]);
+  });
+
+  it('does not count a founder as the CEO', () => {
+    const people = extractNamedPeople(
+      [
+        { title: 'Orbitly founder Jeff Hale', snippet: 'Jeff Hale founded Orbitly in 1994.', url: 'https://a.example' },
+        { title: 'Jeff Hale, Orbitly Founder', snippet: '', url: 'https://b.example' },
+      ],
+      { companyName: 'Orbitly', domain: 'orbitly.com', position: 'CEO', synonyms: ['Chief Executive Officer', 'Founder'] },
+    );
+    expect(people).toEqual([]);
+  });
+});
+
+describe('nameVariants', () => {
+  it('lists the other common forms of a first name, keeping the last name', () => {
+    expect(nameVariants('Andy Corwin')).toEqual(['Andrew Corwin']);
+    expect(nameVariants('William Ostrander')).toEqual(expect.arrayContaining(['Bill Ostrander', 'Will Ostrander']));
+    expect(nameVariants('Mara Velin')).toEqual([]);
+  });
+});
+
+describe('extractNamedPeople: weighting, recency and links', () => {
+  const amazonLike: RankingContext = {
+    companyName: 'Orbitly',
+    domain: 'orbitly.com',
+    position: 'CEO',
+    synonyms: ['Chief Executive Officer'],
+  };
+
+  it('counts a source on the company’s own domain double, and returns up to 3 source links', () => {
+    const people = extractNamedPeople(
+      [
+        { title: 'Leadership | Orbitly', snippet: 'Andy Corwin, President and CEO', url: 'https://ir.orbitly.com/leadership' },
+        { title: 'Orbitly CEO Andy Corwin on AI', snippet: '', url: 'https://news.example/a' },
+      ],
+      amazonLike,
+    );
+    expect(people[0]?.name).toBe('Andy Corwin');
+    expect(people[0]?.sources).toBe(3);
+    expect(people[0]?.links?.[0]).toEqual({ title: 'Leadership | Orbitly', url: 'https://ir.orbitly.com/leadership' });
+  });
+
+  it('counts the same page once even if several queries return it', () => {
+    const hit = { title: 'Orbitly CEO Andy Corwin', snippet: '', url: 'https://news.example/a' };
+    expect(extractNamedPeople([hit, hit, { ...hit, url: 'https://news.example/b' }], amazonLike)[0]?.sources).toBe(2);
+  });
+
+  it('does not count someone described as the former holder, even after their name', () => {
+    const people = extractNamedPeople(
+      [
+        {
+          title: 'Andy Corwin succeeded Jeff Hale as Orbitly CEO',
+          snippet: 'Jeff Hale, former CEO of Orbitly, founded the company.',
+          url: 'https://a.example',
+        },
+        { title: 'Orbitly CEO Andy Corwin', snippet: 'Jeff Hale, the ex-CEO, is now executive chair.', url: 'https://b.example' },
+      ],
+      amazonLike,
+    );
+    expect(people.map((p) => p.name)).toEqual(['Andy Corwin']);
   });
 });

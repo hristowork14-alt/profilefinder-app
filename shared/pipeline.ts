@@ -1,14 +1,25 @@
-// The core search pipeline: company → queries → search → filter/dedupe → rank.
+// The core search pipeline: company → queries → search → filter/dedupe → rank → decide.
 // Pure orchestration; every external call is injected (real or mock) and time-boxed.
+//
+// With `corroborate` (real app only), the result is verified before anything is shown:
+//   S1  two independent web queries (LinkedIn excluded) start at t=0, plus one with the resolved
+//       company name when it differs from the domain;
+//   S2  names are read from that evidence by regex and, when available, by Claude (validated);
+//   S3  the verified person is looked up on LinkedIn by name, with a nickname variant;
+//   S4  profile-quality signals go to the ranker;
+//   S5  decision.ts decides what the user sees.
+// Every query, the evidence and the decision are recorded in `trace` (no snippets).
 
 import { resolveCompanyName } from './companyName';
-import { corroborationFor, extractNamedPeople, type EvidenceName } from './corroboration';
+import { corroborationFor, evidenceRoleTerms, extractNamedPeople, namesMatch, type EvidenceName } from './corroboration';
 import { Deadline, withTimeout } from './deadline';
+import { decideResults, type Decision } from './decision';
 import { domainToCompanyName } from './domain';
+import { extractHolderWithClaude, type ExtractedHolder } from './extractHolder';
 import { parseLinkedInTitle, rankHeuristically } from './heuristicRanker';
 import { normalizeLinkedInProfileUrl } from './linkedinUrl';
-import { findSynonyms } from './positionSynonyms';
-import { buildDomainQuery, buildEvidenceQuery, buildNameQueries, buildPersonQuery } from './queryBuilder';
+import { findSynonyms, normalizePosition } from './positionSynonyms';
+import { buildDomainQuery, buildEvidenceQuery, buildNameQueries, buildPersonQueries, buildQuestionQuery } from './queryBuilder';
 import { rankWithClaude } from './rankWithClaude';
 import type {
   Candidate,
@@ -18,8 +29,10 @@ import type {
   PipelineStep,
   RankedBy,
   RankedProfile,
+  RankingContext,
   SearchHit,
   SearchProvider,
+  VerifiedHolder,
 } from './types';
 
 export class SearchUnavailableError extends Error {
@@ -30,20 +43,23 @@ export class SearchUnavailableError extends Error {
 }
 
 export interface PipelineTiming {
-  /** Hard ceiling for the whole pipeline. Netlify's limit is 30 s; we aim for < 10 s. */
+  /** Hard ceiling for the whole pipeline. Netlify's synchronous limit is 60 s; we aim for ≤ 20 s. */
   totalMs: number;
   homepageMs: number;
   searchMs: number;
   llmMs: number;
+  /** Time allowed for Claude to read the independent evidence (S2). */
+  extractMs: number;
   /** Don't start a model call with less time than this left. */
   minLlmMs: number;
 }
 
 export const DEFAULT_TIMING: PipelineTiming = {
-  totalMs: 9000,
+  totalMs: 18000,
   homepageMs: 3000,
   searchMs: 4000,
   llmMs: 5000,
+  extractMs: 3000,
   minLlmMs: 1500,
 };
 
@@ -52,14 +68,36 @@ export interface PipelineDeps {
   fetchHomepage: HomepageFetcher;
   llm: LlmClient | null;
   /**
-   * Cross-check LinkedIn results with an ordinary web search (see corroboration.ts). Costs up to
-   * 2 extra search queries. On in the real app; off in the demo and with USE_MOCKS.
+   * Verify who holds the role through independent sources before showing profiles (see the
+   * header). Costs up to ~5 extra search queries and 1 model call. On in the real app; off in the
+   * demo and with USE_MOCKS.
    */
   corroborate?: boolean;
   timing?: Partial<PipelineTiming>;
   onProgress?: (step: PipelineStep) => void;
   log?: (message: string) => void;
   now?: () => number;
+}
+
+export type QueryKind = 'linkedin' | 'evidence' | 'person';
+
+export interface QueryTrace {
+  query: string;
+  kind: QueryKind;
+  hits: number;
+  ms: number;
+  error?: string;
+}
+
+export type Extraction = 'none' | 'regex' | 'claude' | 'agree' | 'disagree';
+
+/** What happened during one search. Stored server-side for debugging; never contains snippets. */
+export interface PipelineTrace {
+  queries: QueryTrace[];
+  evidence: { name: string; sources: number; hosts: string[]; via: 'regex' | 'claude' | 'both' }[];
+  extraction: Extraction;
+  decision: Decision | 'not_checked';
+  timings: { homepageMs: number | null; evidenceMs: number | null; extractionMs: number | null; rankMs: number | null; totalMs: number };
 }
 
 export interface PipelineResult {
@@ -72,13 +110,14 @@ export interface PipelineResult {
   results: RankedProfile[];
   rankedBy: RankedBy;
   searchErrors: number;
-  /** People independent sources name in the role ([] when corroboration is off or found nobody). */
+  /** People independent sources name in the role ([] when verification is off or found nobody). */
   evidence: EvidenceName[];
+  /** Only set when verification ran: the verified holder, or null if no one could be confirmed. */
+  verifiedHolder?: VerifiedHolder | null;
+  trace: PipelineTrace;
 }
 
 const RESULTS_PER_QUERY = 10;
-/** Look up at most this many evidence-named people on LinkedIn. */
-const MAX_PERSON_QUERIES = 2;
 
 export function filterAndDedupe(hits: SearchHit[]): Candidate[] {
   const bySlug = new Map<string, Candidate>();
@@ -101,65 +140,193 @@ export function filterAndDedupe(hits: SearchHit[]): Candidate[] {
   return [...bySlug.values()];
 }
 
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+function safeHostname(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return '';
+  }
+}
+
+/** The full title for the question query when the user typed an abbreviation ("CEO" → "Chief Executive Officer"). */
+function questionTitle(position: string, synonyms: string[]): string {
+  return /^[A-Z]{2,5}$/.test(position.trim()) ? (evidenceRoleTerms(position, synonyms)[1] ?? position) : position;
+}
+
+/** Combines the regex and Claude readings of the evidence (S2 agreement rule). */
+function agree(
+  regexTop: EvidenceName | null,
+  claude: ExtractedHolder | null,
+  minSources: number,
+): { holder: VerifiedHolder | null; extraction: Extraction } {
+  const fromRegex = regexTop && regexTop.sources >= minSources ? regexTop : null;
+  const fromClaude = claude && claude.sources >= minSources ? claude : null;
+  const toHolder = (e: { name: string; sources: number; links?: VerifiedHolder['sourceLinks'] }): VerifiedHolder => ({
+    name: e.name,
+    sources: e.sources,
+    sourceLinks: e.links ?? [],
+  });
+  if (fromRegex && fromClaude) {
+    if (namesMatch(fromRegex.name, fromClaude.name)) {
+      const richer = fromClaude.sources >= fromRegex.sources ? fromClaude : fromRegex;
+      return {
+        holder: { ...toHolder(richer), name: fromClaude.name, sources: Math.max(fromRegex.sources, fromClaude.sources) },
+        extraction: 'agree',
+      };
+    }
+    if (fromRegex.sources === fromClaude.sources) return { holder: null, extraction: 'disagree' };
+    return { holder: toHolder(fromRegex.sources > fromClaude.sources ? fromRegex : fromClaude), extraction: 'disagree' };
+  }
+  if (fromClaude) return { holder: toHolder(fromClaude), extraction: 'claude' };
+  if (fromRegex) return { holder: toHolder(fromRegex), extraction: 'regex' };
+  return { holder: null, extraction: 'none' };
+}
+
 export async function runSearchPipeline(input: { domain: string; position: string }, deps: PipelineDeps): Promise<PipelineResult> {
   const timing = { ...DEFAULT_TIMING, ...deps.timing };
+  const clock = deps.now ?? (() => Date.now());
+  const startedAt = clock();
   const deadline = new Deadline(timing.totalMs, deps.now);
   const log = deps.log ?? (() => {});
   const { domain, position } = input;
   const synonyms = findSynonyms(position);
+  const verify = Boolean(deps.corroborate);
 
-  const runQuery = (query: string, reserveMs: number) =>
-    withTimeout(`search "${query}"`, deadline.budget(timing.searchMs, reserveMs), (signal) =>
+  const trace: PipelineTrace = {
+    queries: [],
+    evidence: [],
+    extraction: 'none',
+    decision: 'not_checked',
+    timings: { homepageMs: null, evidenceMs: null, extractionMs: null, rankMs: null, totalMs: 0 },
+  };
+  /** Runs one search query, recording kind, hit count, time and error in the trace. */
+  const runQuery = (query: string, kind: QueryKind, reserveMs: number): Promise<SearchHit[]> => {
+    const started = clock();
+    return withTimeout(`search "${query}"`, deadline.budget(timing.searchMs, reserveMs), (signal) =>
       deps.searchProvider.search(query, { signal, limit: RESULTS_PER_QUERY }),
+    ).then(
+      (hits) => {
+        trace.queries.push({ query, kind, hits: hits.length, ms: clock() - started });
+        return hits;
+      },
+      (error: unknown) => {
+        trace.queries.push({ query, kind, hits: 0, ms: clock() - started, error: errorText(error).slice(0, 200) });
+        throw error;
+      },
     );
+  };
 
-  // 1) Company name and the domain query start at the same time.
+  // 1) Company name, the domain query and (when verifying) the independent evidence start together.
   deps.onProgress?.('company');
   const domainQuery = buildDomainQuery(domain, position);
-  const domainSearch = runQuery(domainQuery, timing.minLlmMs);
+  const domainSearch = runQuery(domainQuery, 'linkedin', timing.minLlmMs);
+  const homepageStarted = clock();
   const homepage = withTimeout('homepage', deadline.budget(timing.homepageMs, timing.minLlmMs), (signal) =>
     deps.fetchHomepage(domain, signal),
   ).catch((error: unknown) => {
-    log(`Homepage fetch failed for ${domain}: ${error instanceof Error ? error.message : String(error)}`);
+    log(`Homepage fetch failed for ${domain}: ${errorText(error)}`);
     return null;
   });
-  // Independent evidence (optional) starts at the same time, with the name derived from the domain.
-  const evidenceQuery = deps.corroborate ? buildEvidenceQuery(domainToCompanyName(domain), position) : null;
-  let evidenceFailed = false;
-  // The failure handler is attached right away, so an early failure is never an unhandled rejection.
-  const evidenceSearch = evidenceQuery
-    ? runQuery(evidenceQuery, timing.minLlmMs).catch((error: unknown) => {
-        evidenceFailed = true;
-        log(`Evidence query failed (${evidenceQuery}): ${error instanceof Error ? error.message : String(error)}`);
-        return [] as SearchHit[];
-      })
-    : null;
-  const company = resolveCompanyName(await homepage, domain);
 
-  // 2) Name-based queries, in parallel with whatever is left of the domain query. When evidence
-  //    names someone, their LinkedIn profile is looked up too, as soon as the evidence arrives.
+  let evidenceErrors = 0;
+  // Failure handlers are attached right away, so an early failure is never an unhandled rejection.
+  const evidenceQuery = (query: string) =>
+    runQuery(query, 'evidence', timing.minLlmMs).catch((error: unknown) => {
+      evidenceErrors++;
+      log(`Evidence query failed (${query}): ${errorText(error)}`);
+      return [] as SearchHit[];
+    });
+  const provisionalName = domainToCompanyName(domain);
+  const evidenceSearches: Promise<SearchHit[]>[] = verify
+    ? [
+        evidenceQuery(buildEvidenceQuery(provisionalName, position)),
+        evidenceQuery(buildQuestionQuery(provisionalName, questionTitle(position, synonyms))),
+      ]
+    : [];
+
+  const company = resolveCompanyName(await homepage, domain);
+  trace.timings.homepageMs = clock() - homepageStarted;
+  const ctxBase: RankingContext = { companyName: company.name, domain, position, synonyms };
+  if (verify && normalizePosition(company.name) !== normalizePosition(provisionalName)) {
+    // The real brand differs from the domain ("mailchimp" for intuit-mc.com): ask again with it.
+    evidenceSearches.push(evidenceQuery(buildEvidenceQuery(company.name, position)));
+  }
+
+  // 2) LinkedIn name queries, in parallel with the evidence chain: read the evidence, agree on a
+  //    holder, and look that person up by name (S1–S3).
   deps.onProgress?.('search');
   const nameQueries = buildNameQueries(company.name, position, synonyms);
   const linkedinQueries = [...nameQueries, domainQuery];
-  let evidence: EvidenceName[] = [];
-  const personQueries: string[] = [];
-  const personSearch: Promise<SearchHit[]> = evidenceSearch
-    ? evidenceSearch.then(async (evidenceHits) => {
-        evidence = extractNamedPeople(evidenceHits, { companyName: company.name, domain, position, synonyms });
-        personQueries.push(...evidence.slice(0, MAX_PERSON_QUERIES).map((e) => buildPersonQuery(e.name, company.name)));
-        const found = await Promise.allSettled(personQueries.map((q) => runQuery(q, timing.minLlmMs)));
-        return found.flatMap((outcome, index) => {
-          if (outcome.status === 'fulfilled') return outcome.value;
-          log(
-            `Query failed (${personQueries[index]}): ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`,
-          );
-          return [];
-        });
-      })
-    : Promise.resolve([]);
+
+  let regexNames: EvidenceName[] = [];
+  let holder: VerifiedHolder | null = null;
+  let usedModelForExtraction = false;
+  let personErrors = 0;
+  const lookUp = async (name: string): Promise<SearchHit[]> => {
+    const settled = await Promise.allSettled(buildPersonQueries(name, company.name).map((q) => runQuery(q, 'person', timing.minLlmMs)));
+    return settled.flatMap((outcome) => {
+      if (outcome.status === 'fulfilled') return outcome.value;
+      personErrors++;
+      return [];
+    });
+  };
+
+  const evidenceChain = async (): Promise<SearchHit[]> => {
+    if (!verify) return [];
+    const evidenceStarted = clock();
+    const evidenceHits = [...new Map((await Promise.all(evidenceSearches)).flat().map((h) => [h.url, h])).values()].filter(
+      (h) => !/(^|\.)linkedin\.com\//i.test(h.url.replace(/^https?:\/\//, '')),
+    );
+    trace.timings.evidenceMs = clock() - evidenceStarted;
+    regexNames = extractNamedPeople(evidenceHits, ctxBase);
+    const regexTop = regexNames[0] ?? null;
+    // Start looking up the regex favourite right away; Claude usually agrees.
+    const early = regexTop ? lookUp(regexTop.name) : Promise.resolve([] as SearchHit[]);
+
+    let claude: ExtractedHolder | null = null;
+    if (deps.llm && evidenceHits.length > 0 && deadline.remaining() >= timing.minLlmMs * 2) {
+      const llm = deps.llm;
+      const extractionStarted = clock();
+      usedModelForExtraction = true;
+      try {
+        claude = await withTimeout('evidence extraction', deadline.budget(timing.extractMs, timing.minLlmMs), (signal) =>
+          extractHolderWithClaude(evidenceHits, ctxBase, llm, { timeoutMs: deadline.budget(timing.extractMs, timing.minLlmMs), signal }),
+        );
+      } catch (error) {
+        log(`Evidence extraction unavailable, using regex: ${errorText(error)}`);
+      }
+      trace.timings.extractionMs = clock() - extractionStarted;
+    }
+
+    const agreed = agree(regexTop, claude, 2);
+    holder = agreed.holder;
+    trace.extraction = agreed.extraction;
+    trace.evidence = regexNames.map((e) => ({
+      name: e.name,
+      sources: e.sources,
+      hosts: e.hosts ?? [],
+      via: claude && namesMatch(claude.name, e.name) ? 'both' : 'regex',
+    }));
+    if (claude && !regexNames.some((e) => namesMatch(e.name, claude!.name))) {
+      trace.evidence.unshift({
+        name: claude.name,
+        sources: claude.sources,
+        hosts: claude.links.map((l) => safeHostname(l.url)),
+        via: 'claude',
+      });
+    }
+
+    const earlyHits = await early;
+    const verified = holder as VerifiedHolder | null;
+    if (verified && (!regexTop || !namesMatch(verified.name, regexTop.name))) return [...(await lookUp(verified.name)), ...earlyHits];
+    return earlyHits;
+  };
+
   const [settled, personHits] = await Promise.all([
-    Promise.allSettled([...nameQueries.map((q) => runQuery(q, timing.minLlmMs)), domainSearch]),
-    personSearch,
+    Promise.allSettled([...nameQueries.map((q) => runQuery(q, 'linkedin', timing.minLlmMs)), domainSearch]),
+    evidenceChain(),
   ]);
 
   // Profiles found by name (from independent evidence) go first, so they're never cut off by the
@@ -170,42 +337,73 @@ export async function runSearchPipeline(input: { domain: string; position: strin
     if (outcome.status === 'fulfilled') hits.push(...outcome.value);
     else {
       searchErrors++;
-      log(`Query failed (${linkedinQueries[index]}): ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`);
+      log(`Query failed (${linkedinQueries[index]}): ${errorText(outcome.reason)}`);
     }
   });
   if (searchErrors === settled.length) throw new SearchUnavailableError();
-  // A failed evidence query doesn't stop the search, but the answer is incomplete (not cached).
-  if (evidenceFailed) searchErrors++;
+  // Failed evidence or person queries don't stop the search, but the answer is incomplete (not cached).
+  searchErrors += evidenceErrors + personErrors;
 
-  const queries = [...linkedinQueries, ...(evidenceQuery ? [evidenceQuery] : []), ...personQueries];
+  const verifiedHolder = holder as VerifiedHolder | null;
+  // Evidence shown to the ranker: the verified holder first, then other names the regex found.
+  const evidence: EvidenceName[] = verify
+    ? [
+        ...(verifiedHolder ? [{ name: verifiedHolder.name, sources: verifiedHolder.sources, links: verifiedHolder.sourceLinks }] : []),
+        ...regexNames.filter((e) => !verifiedHolder || !namesMatch(e.name, verifiedHolder.name)),
+      ]
+    : [];
+  const queries = trace.queries.map((q) => q.query);
   const candidates = filterAndDedupe(hits);
-  if (deps.corroborate) {
-    for (const candidate of candidates) {
-      candidate.corroboratedBy = corroborationFor(parseLinkedInTitle(candidate.title).name, evidence);
-    }
+  if (verify) {
+    for (const candidate of candidates) candidate.corroboratedBy = corroborationFor(parseLinkedInTitle(candidate.title).name, evidence);
   }
-  const ctx = { companyName: company.name, domain, position, synonyms, ...(deps.corroborate ? { evidence } : {}) };
-  const base = { domain, position, companyName: company.name, companySource: company.source, queries, candidates, searchErrors, evidence };
+  const ctx: RankingContext = { ...ctxBase, ...(verify ? { evidence } : {}) };
+  const base = {
+    domain,
+    position,
+    companyName: company.name,
+    companySource: company.source,
+    queries,
+    candidates,
+    searchErrors,
+    evidence,
+    trace,
+  };
 
-  // 3) Rank — Claude if available and there's time, otherwise the heuristic.
+  const finish = (results: RankedProfile[], rankedBy: RankedBy): PipelineResult => {
+    if (!verify) {
+      trace.timings.totalMs = clock() - startedAt;
+      return { ...base, results, rankedBy };
+    }
+    const decided = decideResults(results, candidates, verifiedHolder, ctx);
+    trace.decision = decided.decision;
+    trace.timings.totalMs = clock() - startedAt;
+    return { ...base, results: decided.results, rankedBy, verifiedHolder: decided.verifiedHolder };
+  };
+
+  // 3) Rank — Claude if available and there's time, otherwise the heuristic. At most 2 model
+  //    calls per search: no ranking retry when Claude already read the evidence.
   deps.onProgress?.('rank');
-  if (candidates.length === 0) return { ...base, results: [], rankedBy: deps.llm ? 'claude' : 'heuristic' };
+  if (candidates.length === 0) return finish([], deps.llm ? 'claude' : 'heuristic');
 
+  const rankStarted = clock();
   if (deps.llm && deadline.remaining() >= timing.minLlmMs) {
     const llm = deps.llm;
     try {
       const results = await withTimeout('ranking', deadline.budget(timing.llmMs, 200), (signal) =>
         rankWithClaude(candidates, ctx, llm, {
           timeoutMs: deadline.budget(timing.llmMs, 200),
-          allowRetry: () => deadline.remaining() >= timing.minLlmMs,
+          allowRetry: () => !usedModelForExtraction && deadline.remaining() >= timing.minLlmMs,
           signal,
         }),
       );
-      return { ...base, results, rankedBy: 'claude' };
+      trace.timings.rankMs = clock() - rankStarted;
+      return finish(results, 'claude');
     } catch (error) {
-      log(`Claude ranking unavailable, using heuristic: ${error instanceof Error ? error.message : String(error)}`);
+      log(`Claude ranking unavailable, using heuristic: ${errorText(error)}`);
     }
   }
-
-  return { ...base, results: rankHeuristically(candidates, ctx), rankedBy: 'heuristic' };
+  const results = rankHeuristically(candidates, ctx);
+  trace.timings.rankMs = clock() - rankStarted;
+  return finish(results, 'heuristic');
 }

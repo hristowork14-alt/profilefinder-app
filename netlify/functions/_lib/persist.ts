@@ -1,7 +1,9 @@
 // Saves searches and their results to the user's history.
 // The secret key bypasses RLS, so ownership is checked explicitly here.
 
+import type { PipelineTrace } from '../../../shared/pipeline';
 import type { SaveSearchInput } from '../../../shared/records';
+import type { Json } from '../../../src/types/database';
 import { dbTimeout, type AdminClient } from './supabaseAdmin';
 
 const trim = (value: string | null, max: number) => (value == null ? null : value.slice(0, max));
@@ -31,6 +33,13 @@ export async function saveSearch(admin: AdminClient, input: SaveSearchInput): Pr
       status: input.status,
       error: trim(input.error, 500),
       from_cache: input.fromCache,
+      ...(input.verifiedHolder
+        ? {
+            verified_holder: input.verifiedHolder.name.slice(0, 200),
+            verified_sources: Math.max(0, Math.min(100, Math.round(input.verifiedHolder.sources))),
+            verified_source_links: input.verifiedHolder.sourceLinks.slice(0, 3) as unknown as Json,
+          }
+        : {}),
     })
     .select('id')
     .abortSignal(dbTimeout())
@@ -49,6 +58,7 @@ export async function saveSearch(admin: AdminClient, input: SaveSearchInput): Pr
           linkedin_url: result.linkedinUrl,
           confidence: Math.max(0, Math.min(100, Math.round(result.confidence))),
           reasoning: result.reasoning.slice(0, 500),
+          verified: result.verified === true,
         })),
       )
       .abortSignal(dbTimeout());
@@ -62,5 +72,27 @@ export async function saveSearch(admin: AdminClient, input: SaveSearchInput): Pr
       throw new Error(`results insert: ${resultsError.message}`);
     }
   }
+
+  if (input.diagnostics) await saveDiagnostics(admin, search.id, input.diagnostics);
   return search.id;
+}
+
+/**
+ * Server-only debugging record (RLS on, no client policies). Best-effort: a failure here is
+ * logged but never fails the search. Contains query texts, counts, timings, the decision and
+ * evidence names with source hosts — never snippets.
+ */
+async function saveDiagnostics(admin: AdminClient, searchId: string, trace: PipelineTrace): Promise<void> {
+  const { error } = await admin
+    .from('search_diagnostics')
+    .insert({
+      search_id: searchId,
+      queries: trace.queries.slice(0, 20) as unknown as Json,
+      evidence: trace.evidence.slice(0, 5) as unknown as Json,
+      decision: trace.decision,
+      extraction: trace.extraction,
+      timings: trace.timings as unknown as Json,
+    })
+    .abortSignal(dbTimeout());
+  if (error) console.log(`[profilefinder] Diagnostics insert failed: ${error.message}`);
 }

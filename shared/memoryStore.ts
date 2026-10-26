@@ -1,6 +1,7 @@
 // In-memory implementation of the storage the app needs. Used by the tests and, with a
 // localStorage snapshot hook, by the browser demo (src/lib/backend/demoBackend.ts).
 
+import type { PipelineTrace } from './pipeline';
 import type { BulkJobRecord, BulkRowRecord, CacheRecord, SaveSearchInput, SearchStore, SearchWithResults } from './records';
 
 export interface MemoryDb {
@@ -12,6 +13,8 @@ export interface MemoryDb {
 
 export interface MemoryStore extends SearchStore {
   readonly db: MemoryDb;
+  /** Diagnostics by search id. Kept in memory only (never in the demo's localStorage snapshot). */
+  readonly diagnostics: Map<string, PipelineTrace>;
   /** Convenience accessor for tests. */
   readonly searches: SearchWithResults[];
   createBulkJob(userId: string, fileName?: string, totalRows?: number): string;
@@ -36,9 +39,11 @@ export function createMemoryStore(
 ): MemoryStore {
   const db = initial;
   const commit = () => onChange?.(db);
+  const diagnostics = new Map<string, PipelineTrace>();
 
   return {
     db,
+    diagnostics,
     get searches() {
       return db.searches;
     },
@@ -88,7 +93,9 @@ export function createMemoryStore(
         createdAt: now().toISOString(),
         resultCount: input.results.length,
         results: input.results.map((r) => ({ ...r })),
+        ...(input.verifiedHolder !== undefined ? { verifiedHolder: input.verifiedHolder } : {}),
       });
+      if (input.diagnostics) diagnostics.set(id, input.diagnostics);
       commit();
       return id;
     },

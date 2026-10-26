@@ -8,6 +8,7 @@ import type { PipelineStep, SearchResponse } from '@shared/types';
 import { EmptyState } from '@/components/EmptyState';
 import { ResultList } from '@/components/ResultCard';
 import { SearchSteps } from '@/components/SearchSteps';
+import { UnverifiedNote, VerifiedHolderCard } from '@/components/VerifiedHolderCard';
 import { Button } from '@/components/ui/Button';
 import { ApiError } from '@/lib/api';
 import { requireBackend } from '@/lib/backend';
@@ -208,12 +209,20 @@ export function SearchPage() {
 
           {status.response.results.length > 0 ? (
             <>
-              <ResultList results={status.response.results} animate />
+              {/* verifiedHolder === null: verification ran (real app) and nobody could be confirmed. */}
+              {status.response.verifiedHolder === null && <UnverifiedNote />}
+              <ResultList results={status.response.results} animate verifiedSources={status.response.verifiedHolder?.sources} />
               <p className="text-sm text-muted">
                 Not the company you meant? The name comes from the website itself, so double-check the address. Confidence is an estimate
                 based on public search results.
               </p>
             </>
+          ) : status.response.verifiedHolder ? (
+            <VerifiedHolderCard
+              holder={status.response.verifiedHolder}
+              position={status.response.position}
+              companyName={status.response.companyName}
+            />
           ) : (
             <EmptyState title="No matching profiles found">
               <p>

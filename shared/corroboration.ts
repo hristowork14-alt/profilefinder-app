@@ -4,23 +4,28 @@
 // Why: anyone can type "CTO at Cloudflare" into their own LinkedIn headline. In production a
 // search for cloudflare.com + CTO returned only such self-declared profiles, while an ordinary
 // web search for "Cloudflare CTO" named the real CTO in several independent sources. Names that
-// several sources agree on are used to (1) look that person up on LinkedIn and (2) tell the
-// rankers which candidates are confirmed. This module only reads search-result text; it never
-// fetches any page.
+// several sources agree on are used to (1) look that person up on LinkedIn and (2) decide which
+// candidates are confirmed. This module only reads search-result text; it never fetches a page.
 
+import { otherFirstNames, sameFirstName } from './nicknames';
 import { normalizePosition } from './positionSynonyms';
-import type { RankingContext, SearchHit } from './types';
+import type { RankingContext, SearchHit, SourceLink } from './types';
 
 export interface EvidenceName {
   name: string;
-  /** How many different search results name this person next to the role. */
+  /** Distinct supporting search results; one on the company's own domain counts double. */
   sources: number;
+  /** Up to 3 supporting pages, official ones first (title + URL from the search result). */
+  links?: SourceLink[];
+  /** Hosts of the supporting pages, official ones first (for diagnostics). */
+  hosts?: string[];
 }
 
-/** Names agreed on by at least this many sources count as corroborated. */
+/** Names with at least this much (weighted) support count as corroborated. */
 export const MIN_SOURCES = 2;
 const MAX_NAMES = 3;
-/** How close (in characters) a name must be to a mention of the role. */
+const MAX_LINKS = 3;
+/** How close (in characters, within one sentence) a name must be to a mention of the role. */
 const PROXIMITY = 70;
 
 // Capitalized words that start or end "names" in titles but are not people.
@@ -119,38 +124,80 @@ const NOT_NAME_WORDS = new Set([
   'sunday',
 ]);
 
-const FORMER_BEFORE =
-  /\b(?:former|formerly|previous|previously|ex|outgoing|retired|retiring|departing|predecessor|replaces|replacing|succeeds|succeeding)\b[\s\S]{0,12}$/i;
+/** Words right before a name that mean the person is NOT the current holder. */
+const FORMER_BEFORE_NAME =
+  /\b(?:former|formerly|previous|previously|ex|outgoing|retired|retiring|departing|predecessor|replaces|replaced|replacing|succeeds|succeeded|succeeding|after)\b[\s\S]{0,12}$/i;
+/** Words right before a role mention that make it a past role ("former CEO", "the ex-CEO"). */
+const FORMER_BEFORE_ROLE = /\b(?:former|formerly|ex|previous|previously|outgoing|retired|retiring|departing|then|past|founding)[\s-]*$/i;
 
 // A run of 2–4 capitalized words ("Mara Velin", "Jon Hale-Smith", "Žofia Dvořáková").
 const NAME_RUN = /\p{Lu}[\p{Ll}\p{M}'’-]+(?:\s+\p{Lu}[\p{Ll}\p{M}'’-]+){1,3}/gu;
+const ACRONYM_STOPWORDS = new Set(['of', 'and', '&', 'the', 'for']);
 
 function fold(text: string): string {
   return text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 }
 
+/** Lowercase name tokens: accents folded, possessive and initials dropped, "Last, First" reordered. */
 function nameTokens(name: string): string[] {
-  return fold(name)
+  const parts = name.split(',');
+  const ordered = parts.length === 2 && parts.every((p) => /\p{L}/u.test(p)) ? `${parts[1]} ${parts[0]}` : name;
+  return fold(ordered)
     .replace(/['’]s\b/g, '')
     .split(/[^\p{L}-]+/u)
     .map((t) => t.replace(/^-+|-+$/g, ''))
     .filter((t) => t.length > 1);
 }
 
-/** Same person: first and last name agree (accents, case and middle names ignored). */
+/** Same person: same last name, and the same first name or a common nickname of it. */
 export function namesMatch(a: string, b: string): boolean {
   const ta = nameTokens(a);
   const tb = nameTokens(b);
   if (ta.length < 2 || tb.length < 2) return false;
-  return ta[0] === tb[0] && ta[ta.length - 1] === tb[tb.length - 1];
+  return sameFirstName(ta[0]!, tb[0]!) && ta[ta.length - 1] === tb[tb.length - 1];
 }
 
-function roleTerms(ctx: RankingContext): string[] {
-  return [ctx.position, ...ctx.synonyms].map((t) => t.trim()).filter((t) => t.length >= 2);
+/** Other spellings of a name worth searching for ("Andy Corwin" → ["Andrew Corwin"]). */
+export function nameVariants(name: string): string[] {
+  const words = name.trim().split(/\s+/);
+  const first = words[0];
+  if (!first || words.length < 2) return [];
+  const rest = words.slice(1).join(' ');
+  return otherFirstNames(fold(first)).map((alt) => `${alt.charAt(0).toUpperCase()}${alt.slice(1)} ${rest}`);
 }
 
-function rolePositions(text: string, terms: string[]): number[] {
-  const positions: number[] = [];
+function acronym(title: string): string {
+  return title
+    .split(/\s+/)
+    .filter((w) => w && !ACRONYM_STOPWORDS.has(w.toLowerCase()))
+    .map((w) => w[0]!.toUpperCase())
+    .join('');
+}
+
+function isAcronymPair(a: string, b: string): boolean {
+  const isShort = (t: string) => /^[A-Z]{2,5}$/.test(t.trim());
+  if (isShort(a) && !isShort(b)) return acronym(b) === a.trim();
+  if (isShort(b) && !isShort(a)) return acronym(a) === b.trim();
+  return false;
+}
+
+/**
+ * Role words used to read evidence: the position plus exact equivalents only (CEO ↔ Chief
+ * Executive Officer). Looser related titles (Founder, Managing Director, VP Engineering) are left
+ * out, because "Amazon founder" is not evidence of who is CEO today.
+ */
+export function evidenceRoleTerms(position: string, synonyms: string[]): string[] {
+  return [position, ...synonyms.filter((s) => isAcronymPair(position, s))].map((t) => t.trim()).filter((t) => t.length >= 2);
+}
+
+interface RoleMention {
+  start: number;
+  end: number;
+  former: boolean;
+}
+
+function roleMentions(text: string, terms: string[]): RoleMention[] {
+  const mentions: RoleMention[] = [];
   const lower = text.toLowerCase();
   for (const term of terms) {
     const needle = term.toLowerCase();
@@ -160,11 +207,13 @@ function rolePositions(text: string, terms: string[]): number[] {
       if (at < 0) break;
       const before = lower[at - 1] ?? ' ';
       const after = lower[at + needle.length] ?? ' ';
-      if (!/[\p{L}\p{N}]/u.test(before) && !/[\p{L}\p{N}]/u.test(after)) positions.push(at, at + needle.length);
+      if (!/[\p{L}\p{N}]/u.test(before) && !/[\p{L}\p{N}]/u.test(after)) {
+        mentions.push({ start: at, end: at + needle.length, former: FORMER_BEFORE_ROLE.test(text.slice(Math.max(0, at - 20), at)) });
+      }
       from = at + needle.length;
     }
   }
-  return positions;
+  return mentions;
 }
 
 /** Trims non-name words from both ends of a capitalized run; null if fewer than 2 words remain. */
@@ -177,60 +226,92 @@ function cleanRun(run: string, blocked: Set<string>): string | null {
   return words.join(' ');
 }
 
+function safeHost(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+/** A page on the company's own website (e.g. ir.orbitly.com for orbitly.com). */
+export function isOfficialHost(host: string, domain: string): boolean {
+  const d = domain.toLowerCase();
+  return host === d || host.endsWith(`.${d}`);
+}
+
+/** Title and each sentence of the snippet are read separately, so roles don't leak across sentences. */
+function segments(hit: SearchHit): string[] {
+  return [hit.title, ...hit.snippet.split(/(?<=[.!])\s+|\s+·\s+/)].filter((s) => s.trim().length > 0);
+}
+
+/** Names mentioned right next to a current (not "former") mention of the role in one hit. */
+function namesInHit(hit: SearchHit, terms: string[], blocked: Set<string>): Map<string, string> {
+  const found = new Map<string, string>();
+  for (const text of segments(hit)) {
+    const roles = roleMentions(text, terms);
+    if (roles.length === 0) continue;
+    for (const match of text.matchAll(NAME_RUN)) {
+      const start = match.index ?? 0;
+      const end = start + match[0].length;
+      const distance = (r: RoleMention) => (r.start >= end ? r.start - end : r.end <= start ? start - r.end : 0);
+      const nearest = roles.reduce((best, r) => (distance(r) < distance(best) ? r : best));
+      if (distance(nearest) > PROXIMITY || nearest.former) continue;
+      if (FORMER_BEFORE_NAME.test(text.slice(Math.max(0, start - 30), start))) continue;
+      const name = cleanRun(match[0], blocked);
+      if (!name) continue;
+      const key = nameTokens(name).join(' ');
+      if (!found.has(key)) found.set(key, name);
+    }
+  }
+  return found;
+}
+
 /**
- * People named next to the role in search results that are not LinkedIn pages.
- * Sorted by how many different results name them. Only names with MIN_SOURCES or more are
- * returned, so one stray mention never counts as confirmation.
+ * People named next to the role in search results that are not LinkedIn pages, sorted by
+ * support. Each page counts once (even if several queries return it), and a page on the
+ * company's own domain counts double. Only names with MIN_SOURCES support are returned, so one
+ * stray mention never counts as confirmation.
  */
 export function extractNamedPeople(hits: SearchHit[], ctx: RankingContext): EvidenceName[] {
-  const terms = roleTerms(ctx);
+  const terms = evidenceRoleTerms(ctx.position, ctx.synonyms);
   const blocked = new Set(
     [...nameTokens(ctx.companyName), ...nameTokens(ctx.domain.split('.')[0] ?? ''), ...terms.flatMap((t) => nameTokens(t))].concat(
       normalizePosition(ctx.companyName).split(' '),
     ),
   );
 
-  const counts = new Map<string, { name: string; sources: number }>();
+  const seenUrls = new Set<string>();
+  const tally = new Map<string, { name: string; sources: number; pages: { link: SourceLink; host: string; official: boolean }[] }>();
   for (const hit of hits) {
-    if (/(^|\.)linkedin\.com/i.test(safeHost(hit.url))) continue;
-    const text = `${hit.title} . ${hit.snippet}`;
-    const roles = rolePositions(text, terms);
-    if (roles.length === 0) continue;
-
-    const seenInHit = new Set<string>();
-    for (const match of text.matchAll(NAME_RUN)) {
-      const start = match.index ?? 0;
-      const end = start + match[0].length;
-      const near = roles.some((r) => r >= start - PROXIMITY && r <= end + PROXIMITY);
-      if (!near) continue;
-      if (FORMER_BEFORE.test(text.slice(Math.max(0, start - 30), start))) continue;
-      const name = cleanRun(match[0], blocked);
-      if (!name) continue;
-      const key = nameTokens(name).join(' ');
-      if (seenInHit.has(key)) continue;
-      seenInHit.add(key);
-      const entry = counts.get(key) ?? { name, sources: 0 };
-      entry.sources += 1;
-      counts.set(key, entry);
+    const host = safeHost(hit.url);
+    if (/(^|\.)linkedin\.com$/.test(host) || seenUrls.has(hit.url)) continue;
+    seenUrls.add(hit.url);
+    const official = isOfficialHost(host, ctx.domain);
+    for (const [key, name] of namesInHit(hit, terms, blocked)) {
+      const entry = tally.get(key) ?? { name, sources: 0, pages: [] };
+      entry.sources += official ? 2 : 1;
+      entry.pages.push({ link: { title: hit.title.slice(0, 200), url: hit.url }, host, official });
+      tally.set(key, entry);
     }
   }
 
-  return [...counts.values()]
+  return [...tally.values()]
     .filter((e) => e.sources >= MIN_SOURCES)
     .sort((a, b) => b.sources - a.sources)
     .slice(0, MAX_NAMES)
-    .map(({ name, sources }) => ({ name, sources }));
+    .map(({ name, sources, pages }) => {
+      const ordered = [...pages].sort((a, b) => Number(b.official) - Number(a.official));
+      return {
+        name,
+        sources,
+        links: ordered.slice(0, MAX_LINKS).map((p) => p.link),
+        hosts: [...new Set(ordered.map((p) => p.host))],
+      };
+    });
 }
 
-function safeHost(url: string): string {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return '';
-  }
-}
-
-/** How many sources name this candidate (0 if none). */
+/** How much support this candidate has (0 if none). */
 export function corroborationFor(candidateName: string, evidence: EvidenceName[]): number {
   return evidence.find((e) => namesMatch(e.name, candidateName))?.sources ?? 0;
 }

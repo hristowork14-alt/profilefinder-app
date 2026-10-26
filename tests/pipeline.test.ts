@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SearchUnavailableError, runSearchPipeline } from '../shared/pipeline';
+import { DEFAULT_TIMING, SearchUnavailableError, runSearchPipeline } from '../shared/pipeline';
 import { createMockHomepageFetcher, createMockLlmClient, createMockSearchProvider } from '../shared/mocks';
 import type { LlmClient, SearchHit, SearchProvider } from '../shared/types';
 
@@ -159,7 +159,8 @@ describe('runSearchPipeline with corroboration', () => {
     const result = await run(seen);
     expect(seen).toContain('"Northwind" "CTO" -site:linkedin.com');
     expect(seen).toContain('site:linkedin.com/in "Mara Velin" "Northwind"');
-    expect(result.evidence).toEqual([{ name: 'Mara Velin', sources: 2 }]);
+    expect(result.evidence).toHaveLength(1);
+    expect(result.evidence[0]).toMatchObject({ name: 'Mara Velin', sources: 2 });
     expect(result.results[0]?.fullName).toBe('Mara Velin');
     expect(result.results[0]?.linkedinUrl).toBe('https://www.linkedin.com/in/maravelin');
     const fake = result.results.find((r) => r.fullName === 'zed fakeman');
@@ -180,8 +181,126 @@ describe('runSearchPipeline with corroboration', () => {
     };
     const result = await run([], llm);
     expect(result.rankedBy).toBe('claude');
-    expect(prompts[0]).toMatch(/Independent web sources/);
-    expect(prompts[0]).toMatch(/Mara Velin \(2 sources\)/);
-    expect(prompts[0]).toMatch(/"namedByIndependentSources": 2/);
+    // The first model call is now the evidence extraction; the ranking prompt is the one with candidates.
+    const rankingPrompt = prompts.find((p) => p.includes('<candidates>')) ?? '';
+    expect(rankingPrompt).toMatch(/Independent web sources/);
+    expect(rankingPrompt).toMatch(/Mara Velin \(2 sources\)/);
+    expect(rankingPrompt).toMatch(/"namedByIndependentSources": 2/);
+  });
+});
+
+// Production 2026-10-26: amazon.com + CEO (sources named the real CEO, but his profile wasn't
+// found and a self-declared one was shown) and tesla.com + CEO (the real CEO has no LinkedIn
+// profile, and the app didn't say who it is). Fictional people, real formats.
+describe('runSearchPipeline: multi-strategy verification', () => {
+  const evidence: SearchHit[] = [
+    {
+      title: 'Leadership | Orbitly',
+      snippet: 'Andy Corwin, President and Chief Executive Officer.',
+      url: 'https://ir.orbitly.com/leadership',
+    },
+    { title: 'Who is the CEO of Orbitly?', snippet: 'Andy Corwin has been CEO of Orbitly since 2021.', url: 'https://answers.example/b' },
+  ];
+  const fake: SearchHit = {
+    title: 'zed fakeman - Chief Executive Officer at Orbitly | LinkedIn',
+    snippet: 'Chief Executive Officer at Orbitly · 0 followers',
+    url: 'https://www.linkedin.com/in/zed-fakeman-a13481385',
+  };
+  const andrew: SearchHit = {
+    title: 'Andrew Corwin - Orbitly | LinkedIn',
+    snippet: 'President and CEO at Orbitly · Location: Seattle · 500+ connections on LinkedIn.',
+    url: 'https://www.linkedin.com/in/andrewcorwin',
+  };
+
+  const provider = (seen: string[], profiles: Record<string, SearchHit[]>, evidenceHits = evidence): SearchProvider => ({
+    name: 'test',
+    search: async (query) => {
+      seen.push(query);
+      if (query.includes('-site:linkedin.com')) return evidenceHits;
+      for (const [needle, hits] of Object.entries(profiles)) if (query.includes(needle)) return hits;
+      return [fake];
+    },
+  });
+  const run = (search: SearchProvider, llm: LlmClient | null = null) =>
+    runSearchPipeline(
+      { domain: 'orbitly.com', position: 'CEO' },
+      { searchProvider: search, fetchHomepage: async () => '<title>Orbitly</title>', llm, corroborate: true },
+    );
+
+  it('finds the verified person under a nickname form and hides the self-declared profile', async () => {
+    const seen: string[] = [];
+    const result = await run(provider(seen, { '"Andrew Corwin"': [andrew], '"Andy Corwin"': [] }));
+    expect(seen).toContain('who is the Chief Executive Officer of Orbitly -site:linkedin.com');
+    expect(seen).toContain('site:linkedin.com/in "Andrew Corwin" "Orbitly"');
+    expect(result.results.map((r) => r.linkedinUrl)).toEqual([andrew.url]);
+    expect(result.results[0]?.verified).toBe(true);
+    expect(result.verifiedHolder?.name).toBe('Andy Corwin');
+    expect(result.trace.decision).toBe('verified_profile');
+  });
+
+  it('returns the verified name and no profiles when the person has no findable profile', async () => {
+    const result = await run(provider([], { '"Andy Corwin"': [], '"Andrew Corwin"': [] }));
+    expect(result.results).toEqual([]);
+    expect(result.verifiedHolder).toMatchObject({ name: 'Andy Corwin', sources: 3 });
+    expect(result.verifiedHolder?.sourceLinks[0]?.url).toBe('https://ir.orbitly.com/leadership');
+    expect(result.trace.decision).toBe('verified_no_profile');
+  });
+
+  it('without a verified holder, shows nothing that looks self-declared', async () => {
+    const result = await run(provider([], {}, []));
+    expect(result.verifiedHolder).toBeNull();
+    expect(result.results).toEqual([]);
+    expect(result.trace.decision).toBe('no_results');
+  });
+
+  it('uses Claude to read the evidence when available, and records that it agreed with the regex', async () => {
+    const llm: LlmClient = {
+      complete: async ({ prompt }) =>
+        prompt.includes('<candidates>')
+          ? JSON.stringify({
+              results: [{ fullName: 'Andrew Corwin', headline: 'CEO', linkedinUrl: andrew.url, confidence: 90, reasoning: 'r' }],
+            })
+          : JSON.stringify({ holder: { name: 'Andy Corwin', isCurrent: true, sourceIds: [1, 2] } }),
+    };
+    const result = await run(provider([], { '"Andrew Corwin"': [andrew], '"Andy Corwin"': [] }), llm);
+    expect(result.trace.extraction).toBe('agree');
+    expect(result.results[0]?.verified).toBe(true);
+  });
+
+  it('falls back to the regex when the model fails, and never makes more than 2 model calls', async () => {
+    let calls = 0;
+    const llm: LlmClient = {
+      complete: async () => {
+        calls++;
+        return 'not json';
+      },
+    };
+    const result = await run(provider([], { '"Andrew Corwin"': [andrew], '"Andy Corwin"': [] }), llm);
+    expect(calls).toBeLessThanOrEqual(2);
+    expect(result.trace.extraction).toBe('regex');
+    expect(result.results[0]?.linkedinUrl).toBe(andrew.url);
+  });
+
+  it('records every query with its kind, hit count and time', async () => {
+    const result = await run(provider([], { '"Andrew Corwin"': [andrew], '"Andy Corwin"': [] }));
+    const kinds = new Set(result.trace.queries.map((q) => q.kind));
+    expect(kinds).toEqual(new Set(['linkedin', 'evidence', 'person']));
+    expect(result.trace.queries.every((q) => q.hits >= 0 && q.ms >= 0)).toBe(true);
+    expect(result.trace.evidence[0]).toMatchObject({ name: 'Andy Corwin', hosts: ['ir.orbitly.com', 'answers.example'] });
+    expect(JSON.stringify(result.trace)).not.toMatch(/President and Chief Executive Officer\./); // no snippets
+  });
+});
+
+describe('runSearchPipeline: defaults', () => {
+  it('allows about 18 s for the whole search', () => {
+    expect(DEFAULT_TIMING.totalMs).toBeGreaterThanOrEqual(18_000);
+    expect(DEFAULT_TIMING.totalMs).toBeLessThanOrEqual(20_000);
+  });
+
+  it('keeps the demo path unchanged: no verification fields, decision "not_checked"', async () => {
+    const result = await runSearchPipeline({ domain: 'nimbus-labs.example', position: 'CTO' }, fastMocks());
+    expect(result.verifiedHolder).toBeUndefined();
+    expect(result.results.every((r) => r.verified === undefined)).toBe(true);
+    expect(result.trace.decision).toBe('not_checked');
   });
 });

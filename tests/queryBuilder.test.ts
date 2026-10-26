@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { findSynonyms, normalizePosition } from '../shared/positionSynonyms';
-import { buildDomainQuery, buildEvidenceQuery, buildNameQueries, buildPersonQuery } from '../shared/queryBuilder';
+import {
+  buildDomainQuery,
+  buildEvidenceQuery,
+  buildNameQueries,
+  buildPersonQueries,
+  buildPersonQuery,
+  buildQuestionQuery,
+} from '../shared/queryBuilder';
 
 describe('normalizePosition', () => {
   it('lowercases, trims and collapses whitespace and punctuation', () => {
@@ -53,6 +60,25 @@ describe('query building', () => {
   it('builds the LinkedIn query for a person named by independent sources', () => {
     expect(buildPersonQuery('Dane Knecht', 'Cloudflare')).toBe('site:linkedin.com/in "Dane Knecht" "Cloudflare"');
     expect(buildPersonQuery('Dane "x" Knecht', 'Cloud"flare')).toBe('site:linkedin.com/in "Dane x Knecht" "Cloudflare"');
+  });
+
+  it('builds the natural-language evidence query that triggers answer boxes', () => {
+    expect(buildQuestionQuery('Orbitly', 'Chief Executive Officer')).toBe(
+      'who is the Chief Executive Officer of Orbitly -site:linkedin.com',
+    );
+    expect(buildQuestionQuery('Or"bitly', 'CEO" OR "x')).toBe('who is the CEO OR x of Orbitly -site:linkedin.com');
+  });
+
+  it('builds several profile lookups for a verified name, including a nickname form', () => {
+    expect(buildPersonQueries('Andy Corwin', 'Orbitly')).toEqual([
+      'site:linkedin.com/in "Andy Corwin" "Orbitly"',
+      'site:linkedin.com/in "Andy Corwin"',
+      'site:linkedin.com/in "Andrew Corwin" "Orbitly"',
+    ]);
+    expect(buildPersonQueries('Mara Velin', 'Orbitly')).toEqual([
+      'site:linkedin.com/in "Mara Velin" "Orbitly"',
+      'site:linkedin.com/in "Mara Velin"',
+    ]);
   });
 
   it('strips quotes and search operators from user input', () => {

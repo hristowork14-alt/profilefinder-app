@@ -1,4 +1,4 @@
-// Database types for supabase/migrations/0001_init.sql.
+// Database types for supabase/migrations/0001_init.sql and 0002_verification.sql.
 // Same shape as `supabase gen types typescript` output, with the text status
 // columns narrowed to the values allowed by their CHECK constraints.
 
@@ -126,6 +126,9 @@ export type Database = {
           error: string | null;
           from_cache: boolean;
           created_at: string;
+          verified_holder: string | null;
+          verified_sources: number | null;
+          verified_source_links: Json | null;
         };
         Insert: {
           id?: string;
@@ -139,6 +142,9 @@ export type Database = {
           error?: string | null;
           from_cache?: boolean;
           created_at?: string;
+          verified_holder?: string | null;
+          verified_sources?: number | null;
+          verified_source_links?: Json | null;
         };
         Update: {
           id?: string;
@@ -152,6 +158,9 @@ export type Database = {
           error?: string | null;
           from_cache?: boolean;
           created_at?: string;
+          verified_holder?: string | null;
+          verified_sources?: number | null;
+          verified_source_links?: Json | null;
         };
         Relationships: [
           {
@@ -174,6 +183,7 @@ export type Database = {
           confidence: number;
           reasoning: string;
           created_at: string;
+          verified: boolean;
         };
         Insert: {
           id?: string;
@@ -185,6 +195,7 @@ export type Database = {
           confidence: number;
           reasoning?: string;
           created_at?: string;
+          verified?: boolean;
         };
         Update: {
           id?: string;
@@ -196,6 +207,7 @@ export type Database = {
           confidence?: number;
           reasoning?: string;
           created_at?: string;
+          verified?: boolean;
         };
         Relationships: [
           {
@@ -214,6 +226,7 @@ export type Database = {
           company_name: string;
           results: Json;
           created_at: string;
+          verified_holder: Json | null;
         };
         Insert: {
           domain: string;
@@ -221,6 +234,7 @@ export type Database = {
           company_name: string;
           results?: Json;
           created_at?: string;
+          verified_holder?: Json | null;
         };
         Update: {
           domain?: string;
@@ -228,8 +242,47 @@ export type Database = {
           company_name?: string;
           results?: Json;
           created_at?: string;
+          verified_holder?: Json | null;
         };
         Relationships: [];
+      };
+      search_diagnostics: {
+        Row: {
+          search_id: string;
+          queries: Json;
+          evidence: Json;
+          decision: string;
+          extraction: string | null;
+          timings: Json;
+          created_at: string;
+        };
+        Insert: {
+          search_id: string;
+          queries?: Json;
+          evidence?: Json;
+          decision: string;
+          extraction?: string | null;
+          timings?: Json;
+          created_at?: string;
+        };
+        Update: {
+          search_id?: string;
+          queries?: Json;
+          evidence?: Json;
+          decision?: string;
+          extraction?: string | null;
+          timings?: Json;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'search_diagnostics_search_id_fkey';
+            columns: ['search_id'];
+            isOneToOne: true;
+            referencedRelation: 'searches';
+            referencedColumns: ['id'];
+          },
+        ];
       };
     };
     Views: {

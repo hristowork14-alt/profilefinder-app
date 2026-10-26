@@ -1,17 +1,45 @@
-// Builds the site:linkedin.com/in search queries.
+// Builds the search queries: site:linkedin.com/in queries, and the independent-evidence web
+// queries that exclude LinkedIn.
+
+import { nameVariants } from './corroboration';
 
 const SITE = 'site:linkedin.com/in';
 
-/** Removes characters that would break or hijack a quoted search phrase. */
+/** Removes characters that would break or hijack a search phrase. */
+function clean(term: string): string {
+  return (
+    term
+      .replace(/["“”„]/g, '')
+      // eslint-disable-next-line no-control-regex -- stripping control characters is the point
+      .replace(/[\u0000-\u001f\u007f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 100)
+  );
+}
+
 function quote(term: string): string {
-  const cleaned = term
-    .replace(/["“”„]/g, '')
-    // eslint-disable-next-line no-control-regex -- stripping control characters is the point
-    .replace(/[\u0000-\u001f\u007f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 100);
-  return `"${cleaned}"`;
+  return `"${clean(term)}"`;
+}
+
+/**
+ * Independent evidence, phrased as a question so Google shows its answer box / knowledge panel
+ * ("who is the Chief Executive Officer of Orbitly"). LinkedIn is excluded.
+ */
+export function buildQuestionQuery(companyName: string, position: string): string {
+  return `who is the ${clean(position)} of ${clean(companyName)} -site:linkedin.com`;
+}
+
+/**
+ * LinkedIn lookups for a person independent sources named: name + company, the name alone (the
+ * profile headline may not mention the company), and the most common other form of the first
+ * name with the company ("Andy" ↔ "Andrew").
+ */
+export function buildPersonQueries(personName: string, companyName: string): string[] {
+  const queries = [`${SITE} ${quote(personName)} ${quote(companyName)}`, `${SITE} ${quote(personName)}`];
+  const variant = nameVariants(personName)[0];
+  if (variant) queries.push(`${SITE} ${quote(variant)} ${quote(companyName)}`);
+  return queries;
 }
 
 /** Query 3 — needs only the domain, so it can start before the company name is known. */

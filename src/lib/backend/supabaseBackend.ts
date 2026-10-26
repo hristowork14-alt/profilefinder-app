@@ -1,8 +1,8 @@
 // Real backend: Supabase Auth + Postgres (protected by RLS) + Netlify Functions.
 
 import type { BulkJobRecord, BulkRowRecord, SearchRecord, SearchWithResults } from '@shared/records';
-import type { RankedProfile } from '@shared/types';
-import type { BulkJobRow, BulkJobRowRow, SearchResultRow, SearchRow } from '@/types/database';
+import type { RankedProfile, SourceLink } from '@shared/types';
+import type { BulkJobRow, BulkJobRowRow, Json, SearchResultRow, SearchRow } from '@/types/database';
 import { ApiError, deleteAccountRequest, searchRequest } from '../api';
 import { getSupabase } from '../supabaseClient';
 import type { AuthEvent, AuthUser, Backend } from './types';
@@ -11,6 +11,19 @@ const appUrl = (path: string) => `${window.location.origin}${path}`;
 
 function toUser(user: { id: string; email?: string | null } | null | undefined): AuthUser | null {
   return user ? { id: user.id, email: user.email ?? '' } : null;
+}
+
+/** Source links are stored as JSON; keep only well-formed http(s) entries. */
+function sourceLinks(value: Json | null | undefined): SourceLink[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .flatMap((item) =>
+      item && typeof item === 'object' && !Array.isArray(item) && typeof item.title === 'string' && typeof item.url === 'string'
+        ? [{ title: item.title, url: item.url }]
+        : [],
+    )
+    .filter((link) => /^https?:\/\//i.test(link.url))
+    .slice(0, 3);
 }
 
 function mapSearch(row: SearchRow, resultCount: number): SearchRecord {
@@ -27,6 +40,16 @@ function mapSearch(row: SearchRow, resultCount: number): SearchRecord {
     fromCache: row.from_cache,
     createdAt: row.created_at,
     resultCount,
+    // Only searches that found a verified holder carry it; older searches have none.
+    ...(row.verified_holder
+      ? {
+          verifiedHolder: {
+            name: row.verified_holder,
+            sources: row.verified_sources ?? 0,
+            sourceLinks: sourceLinks(row.verified_source_links),
+          },
+        }
+      : {}),
   };
 }
 
@@ -37,6 +60,7 @@ function mapResult(row: SearchResultRow): RankedProfile {
     linkedinUrl: row.linkedin_url,
     confidence: row.confidence,
     reasoning: row.reasoning,
+    ...(row.verified ? { verified: true } : {}),
   };
 }
 

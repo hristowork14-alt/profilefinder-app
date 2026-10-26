@@ -2,6 +2,7 @@
 // The LlmClient is either the real Anthropic client (netlify/functions/_lib/anthropicClient.ts)
 // or the fixture-based mock (shared/mocks/mockLlmClient.ts) — same code path either way.
 
+import { profileSignals } from './profileQuality';
 import { parseRankingResponse } from './rankingSchema';
 import type { Candidate, LlmClient, RankedProfile, RankingContext } from './types';
 
@@ -42,6 +43,7 @@ function evidenceSection(ctx: RankingContext): string[] {
     'Anyone can type any title into their own LinkedIn headline, so a headline alone proves little.',
     '- If independent sources name someone, the matching candidate (namedByIndependentSources > 0) is very likely the real holder: rank them first. Give a candidate who only claims the title while the sources name someone else at most 40 confidence.',
     '- If they name nobody, judge from the profile text, and be cautious with thin profiles (no location, no other experience, few followers or connections) at large companies: at most 60 confidence.',
+    '- profileSignals summarizes what the search result shows about each profile (audience, location, experience). Use it only to break ties or downgrade, never as proof.',
   ];
 }
 
@@ -52,6 +54,8 @@ export function buildRankingPrompt(candidates: Candidate[], ctx: RankingContext)
     snippet: c.snippet.slice(0, MAX_SNIPPET),
     linkedinUrl: c.linkedinUrl,
     ...(c.corroboratedBy !== undefined ? { namedByIndependentSources: c.corroboratedBy } : {}),
+    // Only when verification ran (real app), so demo prompts are unchanged.
+    ...(ctx.evidence !== undefined ? { profileSignals: profileSignals(c).summary } : {}),
   }));
 
   const prompt = [
