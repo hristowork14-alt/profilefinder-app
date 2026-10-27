@@ -42,6 +42,12 @@ export function PrivacyPage() {
         Data is stored with Supabase (database and login), the app runs on Netlify, searches go through a web search API (Serper.dev), and
         ranking uses the Anthropic API. The company and position you search for are sent to those services to produce results.
       </p>
+      <p>
+        Sign-up, log-in and password-reset requests are protected by Cloudflare Turnstile, a check that tells people from bots; Cloudflare
+        processes technical signals from your browser to do this. When you choose a new password, it is checked against the public Have I
+        Been Pwned list of leaked passwords: only the first 5 characters of a one-way hash of the password are sent, and the password itself
+        never leaves your browser.
+      </p>
 
       <h2>People who appear in results</h2>
       <p>

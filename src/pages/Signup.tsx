@@ -4,10 +4,12 @@ import { Link, Navigate, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useAuth } from '@/auth/context';
 import { AuthShell, GoogleIcon } from '@/components/AuthShell';
+import { useHumanCheck } from '@/components/HumanCheck';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import { requireBackend } from '@/lib/backend';
 import { DEMO_MODE, MIN_PASSWORD_LENGTH, SHOW_GOOGLE_SIGN_IN } from '@/lib/config';
+import { breachedPasswordError } from '@/lib/pwnedPassword';
 import { errorMessage } from '@/lib/utils';
 
 export function SignupPage() {
@@ -18,6 +20,7 @@ export function SignupPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [sentTo, setSentTo] = useState<string | null>(null);
+  const human = useHumanCheck();
 
   if (user && !sentTo) return <Navigate to="/app" replace />;
 
@@ -28,11 +31,17 @@ export function SignupPage() {
     if (password.length < MIN_PASSWORD_LENGTH) return setError(`Use at least ${MIN_PASSWORD_LENGTH} characters for your password.`);
     setBusy(true);
     try {
-      const { needsConfirmation } = await requireBackend().auth.signUp(email.trim(), password);
-      if (needsConfirmation) setSentTo(email.trim());
-      else {
-        toast.success('Account created');
-        navigate('/app', { replace: true });
+      const breached = DEMO_MODE ? null : await breachedPasswordError(password);
+      if (breached) return setError(breached);
+      try {
+        const { needsConfirmation } = await requireBackend().auth.signUp(email.trim(), password, human.token);
+        if (needsConfirmation) setSentTo(email.trim());
+        else {
+          toast.success('Account created');
+          navigate('/app', { replace: true });
+        }
+      } finally {
+        human.reset(); // a token works once
       }
     } catch (err) {
       setError(errorMessage(err));
@@ -91,12 +100,13 @@ export function SignupPage() {
           onChange={(e) => setPassword(e.target.value)}
           hint={`At least ${MIN_PASSWORD_LENGTH} characters.`}
         />
+        {human.widget}
         {error && (
           <p className="rounded-md bg-danger-soft px-3 py-2 text-sm text-danger" role="alert">
             {error}
           </p>
         )}
-        <Button type="submit" size="lg" loading={busy} disabled={!email || !password}>
+        <Button type="submit" size="lg" loading={busy} disabled={!email || !password || !human.ready}>
           Create account
         </Button>
         {SHOW_GOOGLE_SIGN_IN && (

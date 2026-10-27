@@ -19,6 +19,14 @@ export function showGoogleSignIn(demoMode: boolean, flag: string | undefined): b
 
 export const SHOW_GOOGLE_SIGN_IN = showGoogleSignIn(DEMO_MODE, import.meta.env.VITE_GOOGLE_AUTH_ENABLED);
 
+/**
+ * Cloudflare Turnstile site key for the human check on sign-up, log-in and reset requests.
+ * Public by design (like the publishable key); the matching SECRET key lives only in Supabase.
+ * Empty (local dev without a key) or demo mode = no human check.
+ */
+export const TURNSTILE_SITE_KEY = (import.meta.env.VITE_TURNSTILE_SITE_KEY ?? '').trim();
+export const HUMAN_CHECK_ENABLED = !DEMO_MODE && TURNSTILE_SITE_KEY.length > 0;
+
 export const FUNCTIONS_BASE = '/.netlify/functions';
 
 export const MIN_PASSWORD_LENGTH = 8;

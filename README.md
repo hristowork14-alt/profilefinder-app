@@ -247,8 +247,19 @@ You'll create four free accounts: **Supabase**, **Serper**, **Anthropic** and **
 | `MAX_SEARCHES_PER_HOUR`         | `30` (default) — fresh searches per user per hour        | optional                          | Server          |
 | `USE_MOCKS`                     | `false` (default). `true` = fixture search + ranking     | optional                          | Server          |
 | `VITE_DEMO_MODE`                | Leave `false`. `npm run dev:demo` turns it on by itself  | —                                 | Public          |
+| `VITE_TURNSTILE_SITE_KEY`       | Cloudflare → Turnstile → your widget → Site Key          | Netlify (production)              | Public          |
 
 Anything starting with `VITE_` is compiled into the browser code — that's expected for the Supabase URL and publishable key (Row Level Security protects the data). Nothing secret may ever start with `VITE_`.
+
+### Bot protection & password safety
+
+- **Human check (Cloudflare Turnstile)** on sign-up, log-in and "forgot password" requests. It is invisible for most people and only asks for a click when Cloudflare is unsure.
+  - The **site key** is public: it lives in Netlify as `VITE_TURNSTILE_SITE_KEY` (a build-time variable, so redeploy after changing it). Without it, the forms work without the check (local development, demo).
+  - The **secret key** lives **only** in Supabase → Authentication → Attack Protection → Enable CAPTCHA protection (provider: Cloudflare Turnstile). Never in Netlify, `.env`, code or chat.
+  - **Safe rollout order:** 1) deploy the app with the site key, so the forms already send tokens; 2) then switch CAPTCHA protection on in Supabase. The other way round, nobody can log in until the app is deployed.
+  - **Rollback:** switch CAPTCHA protection off in Supabase. The app keeps working either way.
+- **Leaked-password check:** sign-up, the "choose a new password" form and the Account page check new passwords against the public [Pwned Passwords](https://haveibeenpwned.com/Passwords) list and ask for a different one if it appears in a breach. Only the first 5 characters of the password's SHA-1 hash are sent (k-anonymity); the password never leaves the browser. If the service doesn't answer within 3 seconds, the form continues normally. Supabase's own server-side check ("Prevent use of leaked passwords") needs the Pro plan; it can be switched on later under Authentication → Attack Protection / Providers → Email.
+- **`handle_new_user`** (the trigger that creates a profile for each new user) can't be called through the API (`0003_harden_handle_new_user.sql`); the trigger itself works as before.
 
 ---
 

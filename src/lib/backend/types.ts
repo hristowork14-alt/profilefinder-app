@@ -15,12 +15,15 @@ export type AuthEvent = 'SIGNED_IN' | 'SIGNED_OUT' | 'PASSWORD_RECOVERY' | 'USER
 export interface AuthApi {
   getUser(): Promise<AuthUser | null>;
   onChange(callback: (user: AuthUser | null, event: AuthEvent) => void): () => void;
-  /** Returns true when the user must confirm their email before logging in. */
-  signUp(email: string, password: string): Promise<{ needsConfirmation: boolean }>;
-  signIn(email: string, password: string): Promise<void>;
+  /**
+   * Returns true when the user must confirm their email before logging in.
+   * captchaToken (sign-up, log-in, reset request): the Turnstile token, when the human check is on.
+   */
+  signUp(email: string, password: string, captchaToken?: string): Promise<{ needsConfirmation: boolean }>;
+  signIn(email: string, password: string, captchaToken?: string): Promise<void>;
   signInWithGoogle(): Promise<void>;
   signOut(): Promise<void>;
-  requestPasswordReset(email: string): Promise<void>;
+  requestPasswordReset(email: string, captchaToken?: string): Promise<void>;
   updatePassword(newPassword: string): Promise<void>;
   deleteAccount(): Promise<void>;
   /** Demo only: stands in for clicking the link in the reset email. */

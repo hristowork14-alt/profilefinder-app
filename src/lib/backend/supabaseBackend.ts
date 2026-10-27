@@ -26,6 +26,19 @@ function sourceLinks(value: Json | null | undefined): SourceLink[] {
     .slice(0, 3);
 }
 
+/** Shown when Supabase rejects the Turnstile token (expired, already used or missing). */
+export const CAPTCHA_FAILED_MESSAGE = 'The human check expired or failed. Please try again.';
+
+/** Supabase Auth error → the message shown in the form. */
+function authError(message: string): Error {
+  return new Error(/captcha/i.test(message) ? CAPTCHA_FAILED_MESSAGE : message);
+}
+
+/** Adds the CAPTCHA token only when there is one, so calls without it stay exactly as before. */
+function withCaptcha<T extends object>(options: T, captchaToken: string | undefined): T & { captchaToken?: string } {
+  return captchaToken ? { ...options, captchaToken } : options;
+}
+
 function mapSearch(row: SearchRow, resultCount: number): SearchRecord {
   return {
     id: row.id,
@@ -136,14 +149,20 @@ export function createSupabaseBackend(): Backend {
         });
         return () => data.subscription.unsubscribe();
       },
-      async signUp(email, password) {
-        const { data, error } = await supabase.auth.signUp({ email, password, options: { emailRedirectTo: appUrl('/app') } });
-        if (error) throw new Error(error.message);
+      async signUp(email, password, captchaToken) {
+        const { data, error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: withCaptcha({ emailRedirectTo: appUrl('/app') }, captchaToken),
+        });
+        if (error) throw authError(error.message);
         return { needsConfirmation: !data.session };
       },
-      async signIn(email, password) {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw new Error(error.message === 'Invalid login credentials' ? 'Wrong email or password.' : error.message);
+      async signIn(email, password, captchaToken) {
+        const { error } = await supabase.auth.signInWithPassword(
+          captchaToken ? { email, password, options: { captchaToken } } : { email, password },
+        );
+        if (error) throw error.message === 'Invalid login credentials' ? new Error('Wrong email or password.') : authError(error.message);
       },
       async signInWithGoogle() {
         const { error } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: appUrl('/app') } });
@@ -153,9 +172,12 @@ export function createSupabaseBackend(): Backend {
         const { error } = await supabase.auth.signOut();
         if (error) throw new Error(error.message);
       },
-      async requestPasswordReset(email) {
-        const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: appUrl('/reset-password') });
-        if (error) throw new Error(error.message);
+      async requestPasswordReset(email, captchaToken) {
+        const { error } = await supabase.auth.resetPasswordForEmail(
+          email,
+          withCaptcha({ redirectTo: appUrl('/reset-password') }, captchaToken),
+        );
+        if (error) throw authError(error.message);
       },
       async updatePassword(newPassword) {
         const { error } = await supabase.auth.updateUser({ password: newPassword });

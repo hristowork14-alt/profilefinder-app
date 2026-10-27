@@ -3,6 +3,7 @@ import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useAuth } from '@/auth/context';
 import { AuthShell, GoogleIcon } from '@/components/AuthShell';
+import { useHumanCheck } from '@/components/HumanCheck';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import { requireBackend } from '@/lib/backend';
@@ -18,6 +19,7 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const human = useHumanCheck();
 
   if (user) return <Navigate to={from} replace />;
 
@@ -26,11 +28,12 @@ export function LoginPage() {
     setError(null);
     setBusy(true);
     try {
-      await requireBackend().auth.signIn(email.trim(), password);
+      await requireBackend().auth.signIn(email.trim(), password, human.token);
       navigate(from, { replace: true });
     } catch (err) {
       setError(errorMessage(err));
     } finally {
+      human.reset(); // a token works once
       setBusy(false);
     }
   };
@@ -71,12 +74,13 @@ export function LoginPage() {
             </Link>
           }
         />
+        {human.widget}
         {error && (
           <p className="rounded-md bg-danger-soft px-3 py-2 text-sm text-danger" role="alert">
             {error}
           </p>
         )}
-        <Button type="submit" size="lg" loading={busy} disabled={!email || !password}>
+        <Button type="submit" size="lg" loading={busy} disabled={!email || !password || !human.ready}>
           Log in
         </Button>
         {SHOW_GOOGLE_SIGN_IN && (

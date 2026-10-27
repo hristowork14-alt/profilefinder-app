@@ -8,7 +8,8 @@ import { Button } from '@/components/ui/Button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Field } from '@/components/ui/Field';
 import { requireBackend } from '@/lib/backend';
-import { MIN_PASSWORD_LENGTH } from '@/lib/config';
+import { DEMO_MODE, MIN_PASSWORD_LENGTH } from '@/lib/config';
+import { breachedPasswordError } from '@/lib/pwnedPassword';
 import { errorMessage } from '@/lib/utils';
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -38,6 +39,8 @@ export function AccountPage() {
     if (password !== confirm) return setPasswordError('The two passwords do not match.');
     setSavingPassword(true);
     try {
+      const breached = DEMO_MODE ? null : await breachedPasswordError(password);
+      if (breached) return setPasswordError(breached);
       await requireBackend().auth.updatePassword(password);
       setPassword('');
       setConfirm('');

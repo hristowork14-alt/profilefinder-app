@@ -3,10 +3,12 @@ import { Link, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { useAuth } from '@/auth/context';
 import { AuthShell } from '@/components/AuthShell';
+import { useHumanCheck } from '@/components/HumanCheck';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import { requireBackend } from '@/lib/backend';
 import { DEMO_MODE, MIN_PASSWORD_LENGTH } from '@/lib/config';
+import { breachedPasswordError } from '@/lib/pwnedPassword';
 import { errorMessage } from '@/lib/utils';
 
 // Captured at startup, before Supabase reads and clears the reset link's #type=recovery.
@@ -23,6 +25,7 @@ function RequestReset() {
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const human = useHumanCheck();
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -30,11 +33,12 @@ function RequestReset() {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return setError('Enter a valid email address.');
     setBusy(true);
     try {
-      await requireBackend().auth.requestPasswordReset(email.trim());
+      await requireBackend().auth.requestPasswordReset(email.trim(), human.token);
       setSent(true);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
+      human.reset(); // a token works once
       setBusy(false);
     }
   };
@@ -92,7 +96,8 @@ function RequestReset() {
           onChange={(e) => setEmail(e.target.value)}
           error={error}
         />
-        <Button type="submit" size="lg" loading={busy} disabled={!email}>
+        {human.widget}
+        <Button type="submit" size="lg" loading={busy} disabled={!email || !human.ready}>
           Send reset link
         </Button>
       </form>
@@ -114,6 +119,8 @@ function ChooseNewPassword({ onDone }: { onDone: () => void }) {
     if (password !== confirm) return setError('The two passwords do not match.');
     setBusy(true);
     try {
+      const breached = DEMO_MODE ? null : await breachedPasswordError(password);
+      if (breached) return setError(breached);
       await requireBackend().auth.updatePassword(password);
       onDone();
       toast.success('Password updated');
