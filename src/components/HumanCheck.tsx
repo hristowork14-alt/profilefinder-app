@@ -7,10 +7,11 @@
 
 import { Turnstile, type TurnstileInstance } from '@marsidev/react-turnstile';
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Button } from '@/components/ui/Button';
 import { HUMAN_CHECK_ENABLED, TURNSTILE_SITE_KEY } from '@/lib/config';
+import { classifyTurnstileError, humanCheckFailureMessage, type HumanCheckFailure } from '@/lib/humanCheckError';
 
-export const HUMAN_CHECK_FAILED_MESSAGE =
-  "The human check couldn't load. Refresh the page; if you use an ad blocker, allow challenges.cloudflare.com.";
+export const HUMAN_CHECK_FAILED_MESSAGE = humanCheckFailureMessage('load');
 
 export interface HumanCheck {
   /** The token to send with the auth call (undefined when the check is off or not done yet). */
@@ -25,10 +26,14 @@ export interface HumanCheck {
 export function useHumanCheck(): HumanCheck {
   const instance = useRef<TurnstileInstance | null>(null);
   const [token, setToken] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
+  const [failure, setFailure] = useState<HumanCheckFailure | null>(null);
+  // True while Cloudflare shows its checkbox and waits for the person to tick it.
+  const [needsClick, setNeedsClick] = useState(false);
 
   const reset = useCallback(() => {
     setToken(null);
+    setFailure(null);
+    setNeedsClick(false);
     if (HUMAN_CHECK_ENABLED) instance.current?.reset();
   }, []);
 
@@ -43,31 +48,38 @@ export function useHumanCheck(): HumanCheck {
           options={{ theme: 'auto', size: 'flexible', appearance: 'interaction-only', language: 'auto' }}
           onSuccess={(value) => {
             setToken(value);
-            setFailed(false);
+            setFailure(null);
           }}
+          onBeforeInteractive={() => setNeedsClick(true)}
+          onAfterInteractive={() => setNeedsClick(false)}
           onExpire={() => setToken(null)}
           onTimeout={() => setToken(null)}
-          onError={() => {
+          onError={(code) => {
             setToken(null);
-            setFailed(true);
+            setFailure(classifyTurnstileError(code));
           }}
-          onUnsupported={() => setFailed(true)}
-          scriptOptions={{ onError: () => setFailed(true) }}
+          onUnsupported={() => setFailure('unsupported')}
+          scriptOptions={{ onError: () => setFailure('load') }}
         />
-        {failed ? (
-          <p className="rounded-md bg-danger-soft px-3 py-2 text-sm text-danger" role="alert">
-            {HUMAN_CHECK_FAILED_MESSAGE}
-          </p>
+        {failure ? (
+          <div className="flex flex-col items-start gap-2 rounded-md bg-danger-soft px-3 py-2 text-sm text-danger" role="alert">
+            <p>{humanCheckFailureMessage(failure)}</p>
+            {failure === 'challenge' && (
+              <Button variant="secondary" size="sm" onClick={reset}>
+                Try again
+              </Button>
+            )}
+          </div>
         ) : (
           token === null && (
             <p className="text-sm text-muted" aria-live="polite">
-              Checking you're human…
+              {needsClick ? 'Tick the box above to confirm you are human.' : "Checking you're human…"}
             </p>
           )
         )}
       </div>
     );
-  }, [failed, token]);
+  }, [failure, needsClick, token, reset]);
 
   return { token: token ?? undefined, ready: !HUMAN_CHECK_ENABLED || token !== null, reset, widget };
 }
