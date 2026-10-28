@@ -32,6 +32,7 @@ describe('buildExtractionPrompt', () => {
     expect(prompt).toMatch(/Position: CEO/);
     expect(system).toMatch(/currently/i);
     expect(system).toMatch(/former/i);
+    expect(system).toMatch(/another (?:company|organisation)/i);
   });
 });
 
@@ -41,11 +42,60 @@ describe('parseExtraction', () => {
     expect(parsed).toEqual({
       name: 'Andy Corwin',
       sources: 3,
+      sites: 2,
+      strongSites: 2,
       links: [
-        { title: 'Leadership | Orbitly', url: 'https://ir.orbitly.com/leadership' },
-        { title: 'Who is the CEO of Orbitly?', url: 'https://answers.example/b' },
+        {
+          title: 'Leadership | Orbitly',
+          url: 'https://ir.orbitly.com/leadership',
+          quote: 'Andy Corwin, President and Chief Executive Officer.',
+        },
+        {
+          title: 'Who is the CEO of Orbitly?',
+          url: 'https://answers.example/b',
+          quote: 'Andy Corwin has been CEO of Orbitly since July 2021.',
+        },
       ],
     });
+  });
+
+  it('does not count cited results that give the person the role at another company', () => {
+    const elsewhere: SearchHit[] = [
+      {
+        title: 'Andy Corwin (CEO at Quillstone)',
+        snippet: 'Andy Corwin, formerly at Orbitly, now runs Quillstone.',
+        url: 'https://pod.example/1',
+      },
+      {
+        title: 'Who is the CEO of Orbitly?',
+        snippet: 'Andy Corwin has been CEO of Orbitly since July 2021.',
+        url: 'https://answers.example/b',
+      },
+    ];
+    const parsed = parseExtraction(JSON.stringify({ holder: { name: 'Andy Corwin', isCurrent: true, sourceIds: [1, 2] } }), elsewhere, ctx);
+    expect(parsed).toMatchObject({ sources: 1, sites: 1 });
+    expect(parsed?.links.map((l) => l.url)).toEqual(['https://answers.example/b']);
+  });
+
+  it('marks support that rests only on weak sites (video, social) as having no strong site', () => {
+    const weak: SearchHit[] = [
+      { title: 'Orbitly CEO Andy Corwin keynote', snippet: '', url: 'https://www.youtube.com/watch?v=1' },
+      { title: 'Orbitly CEO Andy Corwin AMA', snippet: '', url: 'https://www.reddit.com/r/x/comments/1/' },
+    ];
+    const parsed = parseExtraction(JSON.stringify({ holder: { name: 'Andy Corwin', isCurrent: true, sourceIds: [1, 2] } }), weak, ctx);
+    expect(parsed).toMatchObject({ strongSites: 0 });
+  });
+
+  it('ignores cited job ads and pages that never mention the company', () => {
+    const noisy: SearchHit[] = [
+      { title: 'CEO Andy Corwin on leadership', snippet: 'Andy Corwin, CEO, explains.', url: 'https://talks.example/1' },
+      {
+        title: 'Executive Assistant to the CEO',
+        snippet: 'Orbitly CEO Andy Corwin is hiring.',
+        url: 'https://www.orbitly.com/careers/job/1',
+      },
+    ];
+    expect(parseExtraction(JSON.stringify({ holder: { name: 'Andy Corwin', isCurrent: true, sourceIds: [1, 2] } }), noisy, ctx)).toBeNull();
   });
 
   it('rejects names that are not literally in the cited sources (no invented people)', () => {

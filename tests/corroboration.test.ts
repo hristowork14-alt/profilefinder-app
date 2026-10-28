@@ -153,12 +153,15 @@ describe('extractNamedPeople: weighting, recency and links', () => {
     );
     expect(people[0]?.name).toBe('Andy Corwin');
     expect(people[0]?.sources).toBe(3);
-    expect(people[0]?.links?.[0]).toEqual({ title: 'Leadership | Orbitly', url: 'https://ir.orbitly.com/leadership' });
+    expect(people[0]?.sites).toBe(2);
+    expect(people[0]?.links?.[0]).toMatchObject({ title: 'Leadership | Orbitly', url: 'https://ir.orbitly.com/leadership' });
   });
 
-  it('counts the same page once even if several queries return it', () => {
+  it('counts the same page — and the same website — once, even if several queries return it', () => {
     const hit = { title: 'Orbitly CEO Andy Corwin', snippet: '', url: 'https://news.example/a' };
-    expect(extractNamedPeople([hit, hit, { ...hit, url: 'https://news.example/b' }], amazonLike)[0]?.sources).toBe(2);
+    // One website alone is not enough to confirm anyone.
+    expect(extractNamedPeople([hit, hit, { ...hit, url: 'https://news.example/b' }], amazonLike)).toEqual([]);
+    expect(extractNamedPeople([hit, hit, { ...hit, url: 'https://other.example/b' }], amazonLike)[0]?.sources).toBe(2);
   });
 
   it('does not count someone described as the former holder, even after their name', () => {
@@ -174,5 +177,175 @@ describe('extractNamedPeople: weighting, recency and links', () => {
       amazonLike,
     );
     expect(people.map((p) => p.name)).toEqual(['Andy Corwin']);
+  });
+});
+
+// Regressions from production (fictional names, same shapes as the real search results).
+describe('extractNamedPeople: only sources about this company and this role count', () => {
+  const design: RankingContext = { companyName: 'Northwind', domain: 'northwind.com', position: 'Head of Design', synonyms: [] };
+
+  it('ignores a person whose role is stated at another company (left for a new job)', () => {
+    const people = extractNamedPeople(
+      [
+        {
+          title: 'Mara Velin (head of design at Quillstone)',
+          snippet: 'Mara Velin, previously at Northwind, is now head of design at Quillstone.',
+          url: 'https://newsletter.example/p/design',
+        },
+        {
+          title: 'Mara Velin (head of design at Quillstone)',
+          snippet: 'Episode with Mara Velin, who led design at Northwind for years.',
+          url: 'https://podcast.example/ep/1',
+        },
+        {
+          title: "Quillstone's head of design Mara Velin on craft",
+          snippet: 'Former Northwind designer.',
+          url: 'https://blog.example/2026/craft',
+        },
+      ],
+      design,
+    );
+    expect(people).toEqual([]);
+  });
+
+  it('ignores pages that never mention the company', () => {
+    const people = extractNamedPeople(
+      [
+        {
+          title: 'CTO Jon Brix on scaling teams',
+          snippet: 'Jon Brix, CTO, explains how he scaled engineering.',
+          url: 'https://a.example/1',
+        },
+        { title: 'Interview with CTO Jon Brix', snippet: '', url: 'https://b.example/2' },
+      ],
+      ctx,
+    );
+    expect(people).toEqual([]);
+  });
+
+  it('never reads a job ad as a person (e.g. "Electrical Engineer, Power Electronics")', () => {
+    const people = extractNamedPeople(
+      [
+        {
+          title: 'CTO Office, Power Electronics',
+          snippet: 'Northwind CTO Power Electronics team.',
+          url: 'https://www.northwind.com/careers/job/1234',
+        },
+        {
+          title: 'CTO Office, Power Electronics',
+          snippet: 'Northwind CTO Power Electronics.',
+          url: 'https://www.northwind.com/careers/job/5678',
+        },
+      ],
+      ctx,
+    );
+    expect(people).toEqual([]);
+  });
+
+  it('counts several pages of one website once (the company site counts double, once)', () => {
+    const people = extractNamedPeople(
+      [
+        { title: 'Leadership | Northwind', snippet: 'Mara Velin, Chief Technology Officer.', url: 'https://www.northwind.com/leadership' },
+        { title: 'Northwind blog', snippet: 'Our CTO Mara Velin writes about AI.', url: 'https://www.northwind.com/blog/ai' },
+        { title: 'Northwind feed', snippet: 'Mara Velin, CTO, at the summit.', url: 'https://www.northwind.com/feed/2' },
+      ],
+      ctx,
+    );
+    expect(people[0]).toMatchObject({ name: 'Mara Velin', sources: 2, sites: 1 });
+    expect(people[0]?.links).toHaveLength(1);
+  });
+
+  it('does not confirm anyone from social, video, forum or contact-data pages alone', () => {
+    const people = extractNamedPeople(
+      [
+        { title: 'Northwind CTO Mara Velin keynote', snippet: '', url: 'https://www.youtube.com/watch?v=1' },
+        { title: 'Northwind CTO Mara Velin AMA', snippet: '', url: 'https://www.reddit.com/r/tech/comments/1/' },
+        { title: 'Mara Velin Email & Phone Number | Northwind CTO', snippet: '', url: 'https://contacts.example/mara' },
+      ],
+      ctx,
+    );
+    expect(people).toEqual([]);
+  });
+
+  it('lets a weak page support a stronger one', () => {
+    const people = extractNamedPeople(
+      [
+        { title: 'Northwind names Mara Velin CTO', snippet: '', url: 'https://news.example/a' },
+        { title: 'Northwind CTO Mara Velin keynote', snippet: '', url: 'https://www.youtube.com/watch?v=1' },
+      ],
+      ctx,
+    );
+    expect(people[0]).toMatchObject({ name: 'Mara Velin', sources: 2, sites: 2 });
+    expect(people[0]?.links?.[0]?.url).toBe('https://news.example/a');
+  });
+
+  it('does not count a different role that contains the position (Vice President ≠ President, Office of the CTO)', () => {
+    const president: RankingContext = { companyName: 'Northwind', domain: 'northwind.com', position: 'President', synonyms: [] };
+    expect(
+      extractNamedPeople(
+        [
+          { title: 'Northwind Vice President Ann Lee', snippet: '', url: 'https://a.example/1' },
+          { title: 'Ann Lee, Vice President at Northwind', snippet: '', url: 'https://b.example/2' },
+        ],
+        president,
+      ),
+    ).toEqual([]);
+    expect(
+      extractNamedPeople(
+        [
+          { title: 'Northwind: Ann Lee, assistant to the CTO', snippet: '', url: 'https://a.example/1' },
+          { title: 'Ann Lee, Chief of Staff to the CTO at Northwind', snippet: '', url: 'https://b.example/2' },
+        ],
+        ctx,
+      ),
+    ).toEqual([]);
+  });
+
+  it('does not count someone who stepped down or was the holder in the past', () => {
+    expect(
+      extractNamedPeople(
+        [
+          { title: 'Northwind CTO Jon Brix stepped down in March', snippet: '', url: 'https://a.example/1' },
+          { title: 'Jon Brix was the CTO of Northwind until 2024', snippet: '', url: 'https://b.example/2' },
+        ],
+        ctx,
+      ),
+    ).toEqual([]);
+  });
+
+  it('keeps the sentence that names the person with every source link, without tracking parameters', () => {
+    const people = extractNamedPeople(
+      [
+        {
+          title: 'Newsroom | Information and assets',
+          snippet: 'Press contacts. Northwind appointed Mara Velin as CTO in 2025.',
+          url: 'https://www.northwind.com/newsroom?srsltid=AYC',
+        },
+        { title: 'Northwind CTO Mara Velin', snippet: '', url: 'https://news.example/a' },
+      ],
+      ctx,
+    );
+    expect(people[0]?.links?.[0]).toEqual({
+      title: 'Newsroom | Information and assets',
+      url: 'https://www.northwind.com/newsroom',
+      quote: 'Northwind appointed Mara Velin as CTO in 2025.',
+    });
+  });
+
+  it('still reads the usual phrasings: "promoted to CEO", "Our CTO", "<Company>\'s CTO"', () => {
+    const ceo: RankingContext = {
+      companyName: 'Northwind',
+      domain: 'northwind.com',
+      position: 'CEO',
+      synonyms: ['Chief Executive Officer'],
+    };
+    const people = extractNamedPeople(
+      [
+        { title: 'Ann Lee promoted to CEO', snippet: 'Northwind announces a CEO transition.', url: 'https://www.northwind.com/press/1' },
+        { title: "Northwind's CEO Ann Lee on growth", snippet: '', url: 'https://news.example/b' },
+      ],
+      ceo,
+    );
+    expect(people[0]).toMatchObject({ name: 'Ann Lee', sites: 2 });
   });
 });

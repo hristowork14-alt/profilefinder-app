@@ -17,9 +17,9 @@ function toUser(user: { id: string; email?: string | null } | null | undefined):
 function sourceLinks(value: Json | null | undefined): SourceLink[] {
   if (!Array.isArray(value)) return [];
   return value
-    .flatMap((item) =>
+    .flatMap((item): SourceLink[] =>
       item && typeof item === 'object' && !Array.isArray(item) && typeof item.title === 'string' && typeof item.url === 'string'
-        ? [{ title: item.title, url: item.url }]
+        ? [{ title: item.title, url: item.url, ...(typeof item.quote === 'string' ? { quote: item.quote.slice(0, 300) } : {}) }]
         : [],
     )
     .filter((link) => /^https?:\/\//i.test(link.url))
@@ -53,6 +53,7 @@ function mapSearch(row: SearchRow, resultCount: number): SearchRecord {
     fromCache: row.from_cache,
     createdAt: row.created_at,
     resultCount,
+    ...(row.decision ? { decision: row.decision } : {}),
     // Only searches that found a verified holder carry it; older searches have none.
     ...(row.verified_holder
       ? {
@@ -301,7 +302,7 @@ export function createSupabaseBackend(): Backend {
           const chunk = searchIds.slice(i, i + 100);
           const { data, error } = await supabase
             .from('searches')
-            .select('id, company_name, verified_holder, verified_sources, verified_source_links, search_results(*)')
+            .select('id, company_name, verified_holder, verified_sources, verified_source_links, decision, search_results(*)')
             .in('id', chunk);
           if (error) fail('load the results', error);
           for (const row of data ?? []) {
@@ -309,7 +310,7 @@ export function createSupabaseBackend(): Backend {
             const verifiedHolder = row.verified_holder
               ? { name: row.verified_holder, sources: row.verified_sources ?? 0, sourceLinks: sourceLinks(row.verified_source_links) }
               : null;
-            map.set(row.id, { companyName: row.company_name, results, verifiedHolder });
+            map.set(row.id, { companyName: row.company_name, results, verifiedHolder, decision: row.decision ?? null });
           }
         }
         return map;

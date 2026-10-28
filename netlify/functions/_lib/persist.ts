@@ -33,6 +33,7 @@ export async function saveSearch(admin: AdminClient, input: SaveSearchInput): Pr
       status: input.status,
       error: trim(input.error, 500),
       from_cache: input.fromCache,
+      ...(input.decision ? { decision: input.decision } : {}),
       ...(input.verifiedHolder
         ? {
             verified_holder: input.verifiedHolder.name.slice(0, 200),

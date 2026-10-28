@@ -11,7 +11,7 @@
 // Every query, the evidence and the decision are recorded in `trace` (no snippets).
 
 import { resolveCompanyName } from './companyName';
-import { corroborationFor, evidenceRoleTerms, extractNamedPeople, namesMatch, type EvidenceName } from './corroboration';
+import { corroborationFor, evidenceRoleTerms, extractNamedPeople, isUsableEvidence, namesMatch, type EvidenceName } from './corroboration';
 import { Deadline, withTimeout } from './deadline';
 import { decideResults, type Decision } from './decision';
 import { domainToCompanyName } from './domain';
@@ -28,6 +28,7 @@ import {
   queryMentions,
 } from './queryBuilder';
 import { rankWithClaude } from './rankWithClaude';
+import { isSingleHolderRole } from './roleKind';
 import type {
   Candidate,
   CompanyNameSource,
@@ -129,11 +130,16 @@ export interface PipelineResult {
 
 const RESULTS_PER_QUERY = 10;
 
+/** Hidden or anonymous profiles: the name can't be checked against anything. */
+const ANONYMOUS_PROFILE = /^(?:linkedin member|private profile|profile unavailable)$/i;
+
 export function filterAndDedupe(hits: SearchHit[]): Candidate[] {
   const bySlug = new Map<string, Candidate>();
   for (const hit of hits) {
     const normalized = normalizeLinkedInProfileUrl(hit.url);
     if (!normalized) continue;
+    const name = parseLinkedInTitle(hit.title ?? '').name;
+    if (!name || ANONYMOUS_PROFILE.test(name)) continue;
     const existing = bySlug.get(normalized.slug);
     if (existing) {
       // Keep the richer snippet if the same person shows up in several queries.
@@ -179,30 +185,43 @@ function regexFavourite(names: EvidenceName[]): { top: EvidenceName | null; tie:
   return { top: tie ? null : top, tie };
 }
 
-/** Combines the regex and Claude readings of the evidence (S2 agreement rule). */
+interface Reading {
+  name: string;
+  /** Weighted support (threshold). */
+  sources: number;
+  /** Distinct websites (what the user is told). */
+  sites?: number;
+  strongSites?: number;
+  links?: VerifiedHolder['sourceLinks'];
+}
+
+/**
+ * Combines the regex and Claude readings of the evidence (S2 agreement rule). A reading counts
+ * only with enough support from at least one non-weak website. When both readings count but name
+ * different people, nobody is verified: the sources disagree, and showing either one as
+ * "verified" risks a confident wrong answer.
+ */
 function agree(
-  regexTop: EvidenceName | null,
-  claude: ExtractedHolder | null,
+  regexTop: Reading | null,
+  claude: Reading | null,
   minSources: number,
   regexTie = false,
 ): { holder: VerifiedHolder | null; extraction: Extraction } {
-  const fromRegex = regexTop && regexTop.sources >= minSources ? regexTop : null;
-  const fromClaude = claude && claude.sources >= minSources ? claude : null;
-  const toHolder = (e: { name: string; sources: number; links?: VerifiedHolder['sourceLinks'] }): VerifiedHolder => ({
-    name: e.name,
-    sources: e.sources,
-    sourceLinks: e.links ?? [],
-  });
+  const qualifies = (e: Reading | null): e is Reading => Boolean(e && e.sources >= minSources && (e.strongSites ?? 1) >= 1);
+  const fromRegex = qualifies(regexTop) ? regexTop : null;
+  const fromClaude = qualifies(claude) ? claude : null;
+  const toHolder = (e: Reading): VerifiedHolder => ({ name: e.name, sources: e.sites ?? e.sources, sourceLinks: e.links ?? [] });
   if (fromRegex && fromClaude) {
-    if (namesMatch(fromRegex.name, fromClaude.name)) {
-      const richer = fromClaude.sources >= fromRegex.sources ? fromClaude : fromRegex;
-      return {
-        holder: { ...toHolder(richer), name: fromClaude.name, sources: Math.max(fromRegex.sources, fromClaude.sources) },
-        extraction: 'agree',
-      };
-    }
-    if (fromRegex.sources === fromClaude.sources) return { holder: null, extraction: 'disagree' };
-    return { holder: toHolder(fromRegex.sources > fromClaude.sources ? fromRegex : fromClaude), extraction: 'disagree' };
+    if (!namesMatch(fromRegex.name, fromClaude.name)) return { holder: null, extraction: 'disagree' };
+    const richer = fromClaude.sources >= fromRegex.sources ? fromClaude : fromRegex;
+    return {
+      holder: {
+        ...toHolder(richer),
+        name: fromClaude.name,
+        sources: Math.max(fromRegex.sites ?? 0, fromClaude.sites ?? 0) || richer.sources,
+      },
+      extraction: 'agree',
+    };
   }
   if (fromClaude) return { holder: toHolder(fromClaude), extraction: 'claude' };
   if (fromRegex) return { holder: toHolder(fromRegex), extraction: 'regex' };
@@ -218,6 +237,9 @@ export async function runSearchPipeline(input: { domain: string; position: strin
   const { domain, position } = input;
   const synonyms = findSynonyms(position);
   const verify = Boolean(deps.corroborate);
+  // Only a role one person holds (CEO, Head of Design) can have a verified holder; for roles many
+  // people hold (Engineer) the decision step still filters what is shown, but no holder is sought.
+  const seekHolder = verify && isSingleHolderRole(position);
 
   const trace: PipelineTrace = {
     queries: [],
@@ -270,7 +292,7 @@ export async function runSearchPipeline(input: { domain: string; position: strin
       return [] as SearchHit[];
     });
   const provisionalName = domainToCompanyName(domain);
-  const evidenceSearches: Promise<SearchHit[]>[] = verify
+  const evidenceSearches: Promise<SearchHit[]>[] = seekHolder
     ? [
         evidenceQuery(buildEvidenceQuery(provisionalName, position)),
         evidenceQuery(buildQuestionQuery(provisionalName, questionTitle(position, synonyms))),
@@ -280,7 +302,7 @@ export async function runSearchPipeline(input: { domain: string; position: strin
   const company = resolveCompanyName(await homepage, domain);
   trace.timings.homepageMs = clock() - homepageStarted;
   const ctxBase: RankingContext = { companyName: company.name, domain, position, synonyms };
-  if (verify && normalizePosition(company.name) !== normalizePosition(provisionalName)) {
+  if (seekHolder && normalizePosition(company.name) !== normalizePosition(provisionalName)) {
     // The real brand differs from the domain ("mailchimp" for intuit-mc.com): ask again with it.
     evidenceSearches.push(evidenceQuery(buildEvidenceQuery(company.name, position)));
   }
@@ -316,10 +338,11 @@ export async function runSearchPipeline(input: { domain: string; position: strin
   };
 
   const evidenceChain = async (): Promise<SearchHit[]> => {
-    if (!verify) return [];
+    if (!seekHolder) return [];
     const evidenceStarted = clock();
-    const evidenceHits = [...new Map((await Promise.all(evidenceSearches)).flat().map((h) => [h.url, h])).values()].filter(
-      (h) => !/(^|\.)linkedin\.com\//i.test(h.url.replace(/^https?:\/\//, '')),
+    // Only results about this company count (not LinkedIn, not job ads): see corroboration.ts.
+    const evidenceHits = [...new Map((await Promise.all(evidenceSearches)).flat().map((h) => [h.url, h])).values()].filter((h) =>
+      isUsableEvidence(h, ctxBase),
     );
     trace.timings.evidenceMs = clock() - evidenceStarted;
     regexNames = extractNamedPeople(evidenceHits, ctxBase);

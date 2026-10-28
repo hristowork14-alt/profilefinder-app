@@ -2,8 +2,10 @@
 
 import Papa from 'papaparse';
 import { parseCompanyUrl } from '@shared/domain';
+import type { Decision } from '@shared/decision';
 import type { RankedProfile, VerifiedHolder } from '@shared/types';
 import { sanitizeText } from '@shared/validation';
+import { rowStatus, statusInfo } from './resultStatus';
 
 export const MAX_BULK_ROWS = 100;
 
@@ -79,18 +81,20 @@ export function parseBulkCsv(text: string): ParsedCsv {
   const rows = records.map((record, index): ParsedRow => {
     const companyUrl = sanitizeText(String(record[companyKey] ?? ''));
     const position = sanitizeText(String(record[positionKey] ?? ''));
-    let error: string | null = null;
-    if (!companyUrl) error = 'Missing company website.';
-    else {
-      const company = parseCompanyUrl(companyUrl);
-      if (!company.ok) error = company.error;
-    }
-    if (!error && position.length < 2) error = 'Missing position (at least 2 characters, e.g. CTO).';
-    if (!error && position.length > 100) error = 'The position must be 100 characters or fewer.';
-    return { index, companyUrl: companyUrl.slice(0, 500), position: position.slice(0, 200), error };
+    return { index, companyUrl: companyUrl.slice(0, 500), position: position.slice(0, 200), error: validateRowInput(companyUrl, position) };
   });
 
   return { rows, fileError: null };
+}
+
+/** Why a bulk row can't be searched, or null if its input is fine. */
+export function validateRowInput(companyUrl: string, position: string): string | null {
+  if (!companyUrl) return 'Missing company website.';
+  const company = parseCompanyUrl(companyUrl);
+  if (!company.ok) return company.error;
+  if (position.length < 2) return 'Missing position (at least 2 characters, e.g. CTO).';
+  if (position.length > 100) return 'The position must be 100 characters or fewer.';
+  return null;
 }
 
 export interface ExportRow {
@@ -103,6 +107,10 @@ export interface ExportRow {
   error?: string | null;
   /** Real app only: the person independent sources name (also when no profile was found). */
   verifiedHolder?: VerifiedHolder | null;
+  /** Real app, searches since migration 0004: how the answer was reached. */
+  decision?: Decision | null;
+  /** The row's number in the uploaded file (1 = first data row). */
+  rowNumber?: number;
 }
 
 export const EXPORT_COLUMNS = [
@@ -116,19 +124,37 @@ export const EXPORT_COLUMNS = [
   'confidence',
   'reasoning',
 ];
+/** Added after the original columns (so existing imports keep working); real app only. */
+export const DETAIL_COLUMNS = ['row', 'status', 'verified_person', 'source_url', 'source_quote'];
 
 /** Prevents CSV formula injection when the file is opened in Excel / Google Sheets. */
 function safeCell(value: string): string {
   return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
 }
 
-export function buildResultsCsv(rows: ExportRow[]): string {
+/**
+ * One line per returned profile (or one empty line when there is none). With `detailed` (the real
+ * app), each line also gets the row number from the file, the plain-language status, the verified
+ * person and the best independent source with what it says.
+ */
+export function buildResultsCsv(rows: ExportRow[], options: { detailed?: boolean } = {}): string {
+  const detailed = options.detailed ?? true;
   const data: string[][] = [];
-  for (const row of rows) {
+  rows.forEach((row, index) => {
     const base = [safeCell(row.companyUrl), safeCell(row.position), safeCell(row.companyName ?? '')];
+    const source = row.verifiedHolder?.sourceLinks.find((l) => /^https?:\/\//i.test(l.url));
+    const detail = detailed
+      ? [
+          String(row.rowNumber ?? index + 1),
+          statusInfo(rowStatus(row)).label,
+          safeCell(row.verifiedHolder?.name ?? ''),
+          source?.url ?? '',
+          safeCell(source?.quote ?? ''),
+        ]
+      : [];
     if (row.results.length === 0) {
-      data.push([...base, '', '', '', '', '', '']);
-      continue;
+      data.push([...base, '', '', '', '', '', '', ...detail]);
+      return;
     }
     row.results.forEach((result, i) => {
       data.push([
@@ -139,10 +165,11 @@ export function buildResultsCsv(rows: ExportRow[]): string {
         result.linkedinUrl,
         String(result.confidence),
         safeCell(result.reasoning),
+        ...detail,
       ]);
     });
-  }
-  return Papa.unparse({ fields: EXPORT_COLUMNS, data }, { newline: '\r\n' });
+  });
+  return Papa.unparse({ fields: detailed ? [...EXPORT_COLUMNS, ...DETAIL_COLUMNS] : EXPORT_COLUMNS, data }, { newline: '\r\n' });
 }
 
 /** Triggers a browser download of a text file. */

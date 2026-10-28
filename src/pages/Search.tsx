@@ -8,7 +8,7 @@ import type { PipelineStep, SearchResponse } from '@shared/types';
 import { EmptyState } from '@/components/EmptyState';
 import { ResultList } from '@/components/ResultCard';
 import { SearchSteps } from '@/components/SearchSteps';
-import { UnverifiedNote, VerifiedHolderCard } from '@/components/VerifiedHolderCard';
+import { VerificationNote, VerifiedHolderCard } from '@/components/VerifiedHolderCard';
 import { Button } from '@/components/ui/Button';
 import { ApiError } from '@/lib/api';
 import { requireBackend } from '@/lib/backend';
@@ -209,9 +209,17 @@ export function SearchPage() {
 
           {status.response.results.length > 0 ? (
             <>
-              {/* verifiedHolder === null: verification ran (real app) and nobody could be confirmed. */}
-              {status.response.verifiedHolder === null && <UnverifiedNote />}
-              <ResultList results={status.response.results} animate verifiedSources={status.response.verifiedHolder?.sources} />
+              <VerificationNote
+                decision={status.response.decision}
+                verifiedHolder={status.response.verifiedHolder}
+                position={status.response.position}
+              />
+              <ResultList
+                results={status.response.results}
+                animate
+                verifiedSources={status.response.verifiedHolder?.sources}
+                sourceLinks={status.response.verifiedHolder?.sourceLinks}
+              />
               <p className="text-sm text-muted">
                 Not the company you meant? The name comes from the website itself, so double-check the address. Confidence is an estimate
                 based on public search results.

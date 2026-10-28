@@ -22,7 +22,12 @@ export default async (req: Request, _context: Context): Promise<Response> => {
       authenticate: createAuthenticator(admin),
       store: createSupabaseStore(admin),
       pipelineDeps: () => createPipelineDeps(env),
-      config: { maxSearchesPerHour: env.maxSearchesPerHour, cacheTtlMs: CACHE_TTL_MS, cacheValidAfter: CACHE_VALID_AFTER },
+      config: {
+        maxSearchesPerHour: env.maxSearchesPerHour,
+        maxSearchesPerDay: env.maxSearchesPerDay,
+        cacheTtlMs: CACHE_TTL_MS,
+        cacheValidAfter: CACHE_VALID_AFTER,
+      },
       log,
     });
     return await handler(req);

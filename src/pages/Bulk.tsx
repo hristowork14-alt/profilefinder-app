@@ -1,16 +1,35 @@
-import { Download, FileUp, Play, Trash2 } from 'lucide-react';
+import { Download, Eye, FileUp, Play, RotateCcw, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 import { toast } from 'sonner';
 import type { BulkJobRecord, BulkRowRecord } from '@shared/records';
 import { CsvDialog, type CsvFile } from '@/components/CsvDialog';
 import { EmptyState, PageLoading } from '@/components/EmptyState';
 import { PageHeader } from '@/components/Layout';
+import { BulkResults, type BulkResultItem } from '@/components/BulkResults';
 import { StatusBadge } from '@/components/StatusBadge';
 import { Button } from '@/components/ui/Button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { requireBackend } from '@/lib/backend';
-import { BULK_CONCURRENCY, collectExportRows, runBulkJob } from '@/lib/bulkRunner';
-import { DEMO_TEMPLATE_CSV, MAX_BULK_ROWS, TEMPLATE_CSV, buildResultsCsv, downloadTextFile, parseBulkCsv, type ParsedRow } from '@/lib/csv';
+import {
+  BULK_CONCURRENCY,
+  TYPICAL_ROW_SECONDS,
+  collectExportRows,
+  resetFailedRows,
+  rowKey,
+  runBulkJob,
+  toExportRow,
+} from '@/lib/bulkRunner';
+import {
+  DEMO_TEMPLATE_CSV,
+  MAX_BULK_ROWS,
+  TEMPLATE_CSV,
+  buildResultsCsv,
+  downloadTextFile,
+  parseBulkCsv,
+  validateRowInput,
+  type ExportRow,
+  type ParsedRow,
+} from '@/lib/csv';
 import { DEMO_MODE } from '@/lib/config';
 import { cn, errorMessage, formatDateTime } from '@/lib/utils';
 
@@ -22,13 +41,20 @@ interface Preview {
   fileError: string | null;
 }
 
-function ProgressBar({ processed, total }: { processed: number; total: number }) {
+/** "about 7 min" / "under a minute". */
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return 'under a minute';
+  return `about ${Math.round(seconds / 60)} min`;
+}
+
+function ProgressBar({ processed, total, detail }: { processed: number; total: number; detail?: string }) {
   const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex items-baseline justify-between text-[15px]">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 text-[15px]">
         <span>
           <span className="tabular font-semibold">{processed}</span> of <span className="tabular">{total}</span> rows processed
+          {detail && <span className="text-muted"> · {detail}</span>}
         </span>
         <span className="tabular text-muted">{pct}%</span>
       </div>
@@ -59,6 +85,10 @@ export function BulkPage() {
   const [pendingDelete, setPendingDelete] = useState<BulkJobRecord | null>(null);
   const [csvFile, setCsvFile] = useState<CsvFile | null>(null);
   const [exporting, setExporting] = useState<string | null>(null);
+  /** Real app: each row's result, by bulk row id (for the results table). */
+  const [rowResults, setRowResults] = useState<Map<string, ExportRow>>(new Map());
+  /** Measured seconds per row in the current run (for the time estimate); null until measured. */
+  const [pace, setPace] = useState<number | null>(null);
   const stopRef = useRef(false);
 
   // The demo shows files in a dialog (hosted previews may block downloads); the real app downloads directly.
@@ -123,27 +153,89 @@ export function BulkPage() {
     if (file) void readFile(file);
   };
 
+  /** Loads every row's result for the results table (real app). */
+  const loadResults = useCallback(
+    async (rows: BulkRowRecord[]) => {
+      if (DEMO_MODE) return;
+      const ids = [...new Set(rows.map((r) => r.searchId).filter((id): id is string => Boolean(id)))];
+      const found = await backend.bulk.getSearchResults(ids);
+      setRowResults(new Map(rows.map((row) => [row.id, toExportRow(row, row.searchId ? found.get(row.searchId) : undefined)])));
+    },
+    [backend],
+  );
+
+  /** Adds one finished row's result to the table as it comes in (real app). */
+  const loadRowResult = async (row: BulkRowRecord) => {
+    if (DEMO_MODE) return;
+    try {
+      const found = row.searchId ? (await backend.bulk.getSearchResults([row.searchId])).get(row.searchId) : undefined;
+      setRowResults((map) => new Map(map).set(row.id, toExportRow(row, found)));
+    } catch {
+      // The full table is reloaded when the run ends.
+    }
+  };
+
   const run = async (job: BulkJobRecord) => {
     stopRef.current = false;
     setActiveJob(job);
     setRunning(true);
+    const startedAt = Date.now();
+    let doneThisRun = 0;
+    setPace(null);
     try {
-      setActiveRows(await backend.bulk.listRows(job.id));
+      const startRows = await backend.bulk.listRows(job.id);
+      setActiveRows(startRows);
+      await loadResults(startRows).catch(() => undefined);
       const result = await runBulkJob(backend, job.id, {
         onProgress: (processed, total) => setProgress({ processed, total }),
-        onRowDone: (row) => setActiveRows((rows) => rows.map((r) => (r.id === row.id ? row : r))),
+        onRowDone: (row) => {
+          doneThisRun++;
+          if (doneThisRun >= 2) setPace((Date.now() - startedAt) / 1000 / doneThisRun);
+          setActiveRows((rows) => rows.map((r) => (r.id === row.id ? row : r)));
+          void loadRowResult(row);
+        },
         shouldStop: () => stopRef.current,
+        // The demo keeps its original behaviour (its sample has a row that fails on purpose).
+        retries: DEMO_MODE ? 0 : 1,
       });
       if (result.outcome === 'completed') toast.success(`Bulk search finished: ${job.fileName}`);
       if (result.outcome === 'paused_rate_limit')
         toast.warning(`${result.message ?? 'Hourly limit reached.'} Use Resume later to continue.`);
-      setActiveRows(await backend.bulk.listRows(job.id));
+      const endRows = await backend.bulk.listRows(job.id);
+      setActiveRows(endRows);
       setActiveJob(await backend.bulk.getJob(job.id));
+      await loadResults(endRows).catch(() => undefined);
     } catch (error) {
       toast.error(errorMessage(error));
     } finally {
       setRunning(false);
       void loadJobs();
+    }
+  };
+
+  /** Shows a job's results table without running it. */
+  const open = async (job: BulkJobRecord) => {
+    try {
+      const rows = await backend.bulk.listRows(job.id);
+      setActiveJob(job);
+      setActiveRows(rows);
+      setProgress({ processed: job.processedRows, total: job.totalRows });
+      await loadResults(rows);
+    } catch (error) {
+      toast.error(errorMessage(error));
+    }
+  };
+
+  /** Puts failed rows (with valid input) back in the queue and runs the job again. */
+  const retryFailed = async (job: BulkJobRecord) => {
+    try {
+      const count = await resetFailedRows(backend, job.id);
+      if (count === 0)
+        return toast.info('No rows to retry: the failed rows have invalid input. Fix them in your file and upload it again.');
+      const fresh = await backend.bulk.getJob(job.id);
+      if (fresh) void run(fresh);
+    } catch (error) {
+      toast.error(errorMessage(error));
     }
   };
 
@@ -170,7 +262,7 @@ export function BulkPage() {
 
   const download = async (job: BulkJobRecord) => {
     try {
-      const csv = buildResultsCsv(await collectExportRows(backend, job.id));
+      const csv = buildResultsCsv(await collectExportRows(backend, job.id), { detailed: !DEMO_MODE });
       offerCsv(`${exportBase(job)}.csv`, csv);
     } catch (error) {
       toast.error(errorMessage(error));
@@ -206,6 +298,27 @@ export function BulkPage() {
 
   const validCount = preview?.rows.filter((r) => !r.error).length ?? 0;
   const invalidCount = (preview?.rows.length ?? 0) - validCount;
+  // Repeated rows reuse an earlier row's search (no extra cost or time).
+  const uniqueCount = new Set(preview?.rows.filter((r) => !r.error).map((r) => rowKey(r.companyUrl, r.position)) ?? []).size;
+  const repeatCount = validCount - uniqueCount;
+  const estimate = formatDuration((uniqueCount * TYPICAL_ROW_SECONDS) / BULK_CONCURRENCY);
+
+  // Live counts and time left for the active job.
+  const doneCount = activeRows.filter((r) => r.status === 'completed').length;
+  const failedCount = activeRows.filter((r) => r.status === 'failed').length;
+  const leftCount = activeRows.length - doneCount - failedCount;
+  const retryableCount = activeRows.filter((r) => r.status === 'failed' && validateRowInput(r.companyUrl, r.position) === null).length;
+  const secondsPerRow = pace ?? TYPICAL_ROW_SECONDS / BULK_CONCURRENCY;
+  const progressDetail = DEMO_MODE
+    ? undefined
+    : `${doneCount} done${failedCount ? `, ${failedCount} failed` : ''}${leftCount ? `, ${leftCount} left` : ''}${
+        running && leftCount > 0 ? ` · ${formatDuration(leftCount * secondsPerRow)} remaining` : ''
+      }`;
+  const resultItems: BulkResultItem[] = activeRows.map((row) => {
+    const loaded = rowResults.get(row.id);
+    const current = loaded && loaded.status === row.status ? loaded : toExportRow(row, undefined);
+    return { id: row.id, result: current, loaded: row.status !== 'completed' || Boolean(loaded && loaded.status === 'completed') };
+  });
 
   return (
     <>
@@ -274,6 +387,12 @@ export function BulkPage() {
                 <p className="text-[15px] text-muted">
                   {validCount} {validCount === 1 ? 'row' : 'rows'} ready
                   {invalidCount > 0 && <>, {invalidCount} with problems (they'll be marked as failed and skipped)</>}
+                  {!DEMO_MODE && repeatCount > 0 && (
+                    <>
+                      . {repeatCount} {repeatCount === 1 ? 'row repeats' : 'rows repeat'} an earlier row and will reuse its result
+                    </>
+                  )}
+                  {!DEMO_MODE && validCount > 0 && <>. Takes {estimate}.</>}
                 </p>
               )}
             </div>
@@ -353,6 +472,12 @@ export function BulkPage() {
                 </Button>
               ) : (
                 <div className="flex flex-wrap gap-2">
+                  {retryableCount > 0 && (
+                    <Button variant="secondary" onClick={() => void retryFailed(activeJob)}>
+                      <RotateCcw className="size-4" aria-hidden="true" />
+                      Retry {retryableCount} failed {retryableCount === 1 ? 'row' : 'rows'}
+                    </Button>
+                  )}
                   <Button onClick={() => void downloadExcel(activeJob)} loading={exporting === activeJob.id}>
                     {exporting !== activeJob.id && <Download className="size-4" aria-hidden="true" />}
                     Download Excel
@@ -366,19 +491,24 @@ export function BulkPage() {
           <ProgressBar
             processed={running ? progress.processed : activeJob.processedRows}
             total={running ? progress.total : activeJob.totalRows}
+            detail={progressDetail}
           />
-          <ol className="divide-y divide-line rounded-lg border border-line bg-surface text-[15px]">
-            {activeRows.map((row) => (
-              <li key={row.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-2.5">
-                <span className="min-w-0">
-                  <span className="tabular mr-3 inline-block w-6 text-right text-muted">{row.rowIndex + 1}</span>
-                  {row.position} at {row.companyUrl || 'empty'}
-                  {row.error && row.status === 'failed' && <span className="block pl-9 text-sm text-danger">{row.error}</span>}
-                </span>
-                <StatusBadge status={row.status} label={row.status === 'completed' ? 'Done' : undefined} />
-              </li>
-            ))}
-          </ol>
+          {!DEMO_MODE ? (
+            <BulkResults items={resultItems} />
+          ) : (
+            <ol className="divide-y divide-line rounded-lg border border-line bg-surface text-[15px]">
+              {activeRows.map((row) => (
+                <li key={row.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-2.5">
+                  <span className="min-w-0">
+                    <span className="tabular mr-3 inline-block w-6 text-right text-muted">{row.rowIndex + 1}</span>
+                    {row.position} at {row.companyUrl || 'empty'}
+                    {row.error && row.status === 'failed' && <span className="block pl-9 text-sm text-danger">{row.error}</span>}
+                  </span>
+                  <StatusBadge status={row.status} label={row.status === 'completed' ? 'Done' : undefined} />
+                </li>
+              ))}
+            </ol>
+          )}
         </section>
       )}
 
@@ -409,6 +539,12 @@ export function BulkPage() {
                       status={isActive ? 'running' : unfinished ? 'pending' : job.status === 'failed' ? 'failed' : 'completed'}
                       label={isActive ? 'Running' : unfinished ? 'Unfinished' : job.status === 'failed' ? 'All rows failed' : 'Finished'}
                     />
+                    {!DEMO_MODE && !isActive && job.processedRows > 0 && activeJob?.id !== job.id && (
+                      <Button variant="secondary" size="sm" onClick={() => void open(job)} disabled={running}>
+                        <Eye className="size-4" aria-hidden="true" />
+                        Show results
+                      </Button>
+                    )}
                     {unfinished && !isActive && (
                       <Button size="sm" onClick={() => void run(job)} disabled={running}>
                         <Play className="size-4" aria-hidden="true" />

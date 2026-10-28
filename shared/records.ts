@@ -1,6 +1,7 @@
 // App-level record shapes used by the UI and by the in-memory / demo store.
 // The Supabase rows (src/types/database.ts) are mapped into these.
 
+import type { Decision } from './decision';
 import type { PipelineTrace } from './pipeline';
 import type { RankedProfile, VerifiedHolder } from './types';
 
@@ -22,6 +23,8 @@ export interface SearchRecord {
   resultCount: number;
   /** Set when verification ran (real app): the verified holder, or null. */
   verifiedHolder?: VerifiedHolder | null;
+  /** The verification outcome (real app, searches since 0004). */
+  decision?: Decision | null;
 }
 
 export interface SearchWithResults extends SearchRecord {
@@ -57,6 +60,7 @@ export interface CacheRecord {
   results: RankedProfile[];
   createdAt: string;
   verifiedHolder?: VerifiedHolder | null;
+  decision?: Decision | null;
 }
 
 export interface SaveSearchInput {
@@ -71,6 +75,8 @@ export interface SaveSearchInput {
   fromCache: boolean;
   results: RankedProfile[];
   verifiedHolder?: VerifiedHolder | null;
+  /** The verification outcome, when verification ran. */
+  decision?: Decision | null;
   /** What the pipeline did (server-side only; never shown to users). */
   diagnostics?: PipelineTrace;
 }

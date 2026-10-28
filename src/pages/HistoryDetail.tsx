@@ -6,7 +6,7 @@ import type { SearchWithResults } from '@shared/records';
 import { EmptyState, PageLoading } from '@/components/EmptyState';
 import { ResultList } from '@/components/ResultCard';
 import { StatusBadge } from '@/components/StatusBadge';
-import { VerifiedHolderCard } from '@/components/VerifiedHolderCard';
+import { VerificationNote, VerifiedHolderCard } from '@/components/VerifiedHolderCard';
 import { Button } from '@/components/ui/Button';
 import { buttonClasses } from '@/components/ui/buttonStyles';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
@@ -103,7 +103,14 @@ export function HistoryDetailPage() {
         <p className="rounded-md bg-danger-soft px-4 py-3 text-[15px] text-danger">{search.error ?? 'This search failed.'}</p>
       )}
       {search.results.length > 0 ? (
-        <ResultList results={search.results} verifiedSources={search.verifiedHolder?.sources} />
+        <>
+          <VerificationNote decision={search.decision} verifiedHolder={search.verifiedHolder} position={search.position} />
+          <ResultList
+            results={search.results}
+            verifiedSources={search.verifiedHolder?.sources}
+            sourceLinks={search.verifiedHolder?.sourceLinks}
+          />
+        </>
       ) : search.verifiedHolder ? (
         <VerifiedHolderCard
           holder={search.verifiedHolder}

@@ -1,6 +1,7 @@
 // search_cache table access (service role only — the browser has no access to this table).
 
 import { z } from 'zod';
+import type { Decision } from '../../../shared/decision';
 import type { CacheRecord } from '../../../shared/records';
 import type { RankedProfile, VerifiedHolder } from '../../../shared/types';
 import type { Json } from '../../../src/types/database';
@@ -20,8 +21,10 @@ const CachedResults = z.array(
 const CachedHolder = z.object({
   name: z.string().min(1).max(200),
   sources: z.number(),
-  sourceLinks: z.array(z.object({ title: z.string(), url: z.string() })).max(3),
+  sourceLinks: z.array(z.object({ title: z.string(), url: z.string(), quote: z.string().max(300).optional() })).max(3),
 });
+
+const CachedDecision = z.enum(['verified_profile', 'verified_no_profile', 'contradicted', 'unverified', 'no_results']);
 
 export async function getCached(
   admin: AdminClient,
@@ -32,7 +35,7 @@ export async function getCached(
   const since = new Date(Date.now() - maxAgeMs).toISOString();
   const { data, error } = await admin
     .from('search_cache')
-    .select('domain, position_normalized, company_name, results, created_at, verified_holder')
+    .select('domain, position_normalized, company_name, results, created_at, verified_holder, decision')
     .eq('domain', domain)
     .eq('position_normalized', positionNormalized)
     .gte('created_at', since)
@@ -56,6 +59,8 @@ export async function getCached(
     if (!holder.success) return null;
     record.verifiedHolder = holder.data;
   }
+  const decision = CachedDecision.safeParse(data.decision);
+  if (decision.success) record.decision = decision.data;
   return record;
 }
 
@@ -67,6 +72,7 @@ export async function putCached(
     companyName: string;
     results: RankedProfile[];
     verifiedHolder?: VerifiedHolder | null;
+    decision?: Decision | null;
   },
 ): Promise<void> {
   const { error } = await admin
@@ -78,6 +84,7 @@ export async function putCached(
         company_name: entry.companyName,
         results: entry.results as unknown as Json,
         verified_holder: (entry.verifiedHolder ?? null) as unknown as Json,
+        decision: entry.decision ?? null,
         created_at: new Date().toISOString(),
       },
       { onConflict: 'domain,position_normalized' },

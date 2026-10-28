@@ -48,6 +48,8 @@ export interface SearchExport {
   results: RankedProfile[];
   /** Real app: the verified holder, or null when verification found nobody. Demo: absent. */
   verifiedHolder?: VerifiedHolder | null;
+  /** Real app, searches since migration 0004: how the answer was reached. */
+  decision?: SearchResponse['decision'];
 }
 
 export interface BulkApi {

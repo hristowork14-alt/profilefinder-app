@@ -6,7 +6,8 @@
 // literally in one of the cited results — the model can pick, but never invent, a person.
 
 import { z } from 'zod';
-import { evidenceRoleTerms, isOfficialHost } from './corroboration';
+import { evidenceRoleTerms, hitNamesHolder, isUsableEvidence } from './corroboration';
+import { summarizeSupport } from './sourceQuality';
 import type { LlmClient, RankingContext, SearchHit, SourceLink } from './types';
 
 const MAX_EVIDENCE = 20;
@@ -16,8 +17,12 @@ const MAX_LINKS = 3;
 
 export interface ExtractedHolder {
   name: string;
-  /** Weighted support from the cited results (company's own domain counts double). */
+  /** Weighted support from the cited results (see sourceQuality.ts: per website, company site double, weak sites ≤ 1). */
   sources: number;
+  /** Distinct supporting websites. */
+  sites: number;
+  /** Distinct non-weak supporting websites. */
+  strongSites: number;
   links: SourceLink[];
 }
 
@@ -25,7 +30,9 @@ const SYSTEM_PROMPT = `You read web search results (company websites, press rele
 
 Rules:
 - Use only names that appear literally in the numbered results. Never use outside knowledge, never guess.
+- Only results about this company count. Someone who holds the position at another company or organisation does NOT count, even if the result also mentions this company (e.g. "previously at <this company>, now CTO at <another company>").
 - "former", "ex-", "previously", "stepped down", "succeeded by", "until <year>", past tense: that person is NOT current.
+- Job ads describe an opening, not a person. A position normally held by many people at once (e.g. Engineer) has no single holder: return null.
 - If results disagree, prefer the most recent dated statement and the company's own website.
 - Equivalent titles count (e.g. CEO = Chief Executive Officer). Related but different titles do not (Founder is not CEO; VP Engineering is not CTO).
 - sourceIds lists the numbers of the results that say this person holds the position now.
@@ -96,20 +103,23 @@ export function parseExtraction(text: string, evidence: SearchHit[], ctx: Rankin
 
   const usable = evidence.slice(0, MAX_EVIDENCE);
   const cited = [...new Set(sourceIds)].filter((id) => id >= 1 && id <= usable.length).map((id) => usable[id - 1]!);
-  // The name must literally appear in what it cites — the model may pick, never invent.
+  // The name must literally appear in what it cites — the model may pick, never invent — and each
+  // cited result must be about this company and not tie the person to the role elsewhere.
   const needle = fold(name.trim());
-  const supporting = cited.filter((hit) => fold(`${hit.title} ${hit.snippet}`).includes(needle));
-  if (supporting.length === 0) return null;
+  const pages = [...new Map(cited.map((hit) => [hit.url, hit])).values()].flatMap((hit) => {
+    if (!fold(`${hit.title} ${hit.snippet}`).includes(needle) || !isUsableEvidence(hit, ctx)) return [];
+    const quote = hitNamesHolder(hit, name, ctx);
+    return quote ? [{ url: hit.url, title: hit.title, quote }] : [];
+  });
+  if (pages.length === 0) return null;
 
-  const pages = [...new Map(supporting.map((hit) => [hit.url, hit])).values()].map((hit) => ({
-    hit,
-    official: isOfficialHost(host(hit.url), ctx.domain),
-  }));
-  pages.sort((a, b) => Number(b.official) - Number(a.official));
+  const support = summarizeSupport(pages, ctx.domain);
   return {
     name: name.trim(),
-    sources: pages.reduce((sum, p) => sum + (p.official ? 2 : 1), 0),
-    links: pages.slice(0, MAX_LINKS).map((p) => ({ title: p.hit.title.slice(0, 200), url: p.hit.url })),
+    sources: support.score,
+    sites: support.sites,
+    strongSites: support.strongSites,
+    links: support.links.slice(0, MAX_LINKS),
   };
 }
 

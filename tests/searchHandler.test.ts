@@ -102,6 +102,31 @@ describe('search function handler', () => {
     expect((await post({ companyUrl: 'a-four.example', position: 'CTO' }, 'token-b')).status).toBe(200);
   });
 
+  it('does not count searches that failed on our side against the hourly limit', async () => {
+    for (let i = 0; i < 3; i++) expect((await post({ companyUrl: 'search-down.example', position: 'CTO' })).status).toBe(502);
+    expect((await post({ companyUrl: 'a-one.example', position: 'CTO' })).status).toBe(200);
+  });
+
+  it('also enforces a daily limit, with its own message', async () => {
+    const daily = createSearchHandler({
+      authenticate: async () => ({ id: USER_A }),
+      store,
+      pipelineDeps: () => ({
+        searchProvider: createMockSearchProvider({ latencyScale: 0 }),
+        fetchHomepage: createMockHomepageFetcher({ latencyScale: 0 }),
+        llm: createMockLlmClient({ latencyScale: 0 }),
+      }),
+      config: { maxSearchesPerHour: 100, maxSearchesPerDay: 2, cacheTtlMs: 7 * 24 * 3600 * 1000 },
+    });
+    const call = (companyUrl: string) =>
+      daily(new Request('http://localhost/x', { method: 'POST', body: JSON.stringify({ companyUrl, position: 'CTO' }) }));
+    expect((await call('d-one.example')).status).toBe(200);
+    expect((await call('d-two.example')).status).toBe(200);
+    const limited = await call('d-three.example');
+    expect(limited.status).toBe(429);
+    expect(((await limited.json()) as { error: string }).error).toMatch(/per day/);
+  });
+
   it('returns an empty list with a friendly message when nothing is found', async () => {
     const body = (await (await post({ companyUrl: 'empty.example', position: 'CTO' })).json()) as SearchResponse;
     expect(body.results).toEqual([]);

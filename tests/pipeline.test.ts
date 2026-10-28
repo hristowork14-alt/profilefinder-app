@@ -241,7 +241,8 @@ describe('runSearchPipeline: multi-strategy verification', () => {
   it('returns the verified name and no profiles when the person has no findable profile', async () => {
     const result = await run(provider([], { '"Andy Corwin"': [], '"Andrew Corwin"': [] }));
     expect(result.results).toEqual([]);
-    expect(result.verifiedHolder).toMatchObject({ name: 'Andy Corwin', sources: 3 });
+    // Two websites name him: the company's own site and one other. The user is told "2 sources".
+    expect(result.verifiedHolder).toMatchObject({ name: 'Andy Corwin', sources: 2 });
     expect(result.verifiedHolder?.sourceLinks[0]?.url).toBe('https://ir.orbitly.com/leadership');
     expect(result.trace.decision).toBe('verified_no_profile');
   });
@@ -326,6 +327,65 @@ describe('runSearchPipeline: multi-strategy verification', () => {
     });
   });
 
+  // Production 2026-10-27 (absurdventures.com + CEO): the regex and Claude named different people
+  // and the app picked one — a namesake — as "verified".
+  it('does not verify anyone when the regex and Claude name different people', async () => {
+    const twoNames: SearchHit[] = [
+      { title: 'Orbitly CEO Mara Velin', snippet: '', url: 'https://a.example/1' },
+      { title: 'Mara Velin, CEO at Orbitly', snippet: '', url: 'https://b.example/2' },
+      { title: 'Orbitly CEO Mara Velin interview', snippet: '', url: 'https://e.example/5' },
+      { title: 'Jon Hale leads Orbitly', snippet: 'Jon Hale runs Orbitly as chief executive.', url: 'https://c.example/3' },
+      { title: 'Orbitly update', snippet: 'Jon Hale, who runs Orbitly, said…', url: 'https://d.example/4' },
+    ];
+    const llm: LlmClient = {
+      complete: async ({ prompt }) =>
+        prompt.includes('<candidates>')
+          ? JSON.stringify({ results: [] })
+          : JSON.stringify({ holder: { name: 'Jon Hale', isCurrent: true, sourceIds: [4, 5] } }),
+    };
+    const result = await run(provider([], {}, twoNames), llm);
+    expect(result.trace.extraction).toBe('disagree');
+    expect(result.verifiedHolder).toBeNull();
+  });
+
+  it('gives Claude only results about this company, without job ads', async () => {
+    const prompts: string[] = [];
+    const llm: LlmClient = {
+      complete: async ({ prompt }) => {
+        prompts.push(prompt);
+        return prompt.includes('<candidates>') ? JSON.stringify({ results: [] }) : JSON.stringify({ holder: null });
+      },
+    };
+    const noisy: SearchHit[] = [
+      ...evidence,
+      { title: 'Executive Assistant to the CEO', snippet: 'Orbitly is hiring.', url: 'https://www.orbitly.com/careers/job/9' },
+      { title: 'CEO Mara Velin on growth', snippet: 'Mara Velin, CEO of Quillstone.', url: 'https://talks.example/2' },
+    ];
+    await run(provider([], {}, noisy), llm);
+    const extraction = prompts.find((p) => p.includes('Results:')) ?? '';
+    expect(extraction).toMatch(/ir\.orbitly\.com/);
+    expect(extraction).not.toMatch(/careers/);
+    expect(extraction).not.toMatch(/Quillstone/);
+  });
+
+  // Production 2026-10-27 (tesla.com + Electrical Engineer / Engineer): job ads and an old press
+  // release produced a "verified" holder for a role thousands of people hold.
+  it('does not look for a single verified holder when many people hold the role', async () => {
+    const seen: string[] = [];
+    const result = await runSearchPipeline(
+      { domain: 'orbitly.com', position: 'Electrical Engineer' },
+      {
+        searchProvider: provider(seen, {}),
+        fetchHomepage: async () => '<title>Orbitly</title>',
+        llm: null,
+        corroborate: true,
+      },
+    );
+    expect(seen.some((q) => q.includes('-site:linkedin.com'))).toBe(false);
+    expect(result.verifiedHolder).toBeNull();
+    expect(result.trace.decision).not.toBe('verified_profile');
+  });
+
   it('records every query with its kind, hit count and time', async () => {
     const result = await run(provider([], { '"Andrew Corwin"': [andrew], '"Andy Corwin"': [] }));
     const kinds = new Set(result.trace.queries.map((q) => q.kind));
@@ -347,5 +407,16 @@ describe('runSearchPipeline: defaults', () => {
     expect(result.verifiedHolder).toBeUndefined();
     expect(result.results.every((r) => r.verified === undefined)).toBe(true);
     expect(result.trace.decision).toBe('not_checked');
+  });
+});
+
+describe('filterAndDedupe', () => {
+  it('drops hidden or anonymous profiles ("LinkedIn Member") that cannot be checked by name', async () => {
+    const { filterAndDedupe } = await import('../shared/pipeline');
+    const out = filterAndDedupe([
+      { title: 'LinkedIn Member - CEO - Orbitly | LinkedIn', snippet: 'CEO at Orbitly', url: 'https://www.linkedin.com/in/abc123' },
+      { title: 'Andy Corwin - Orbitly | LinkedIn', snippet: 'CEO at Orbitly', url: 'https://de.linkedin.com/in/andycorwin/en' },
+    ]);
+    expect(out.map((c) => c.linkedinUrl)).toEqual(['https://www.linkedin.com/in/andycorwin']);
   });
 });

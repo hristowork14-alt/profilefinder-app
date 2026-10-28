@@ -39,14 +39,16 @@ export interface RankedProfile {
 export interface SourceLink {
   title: string;
   url: string;
+  /** The sentence from the search result that names the person in the role (absent on older searches). */
+  quote?: string;
 }
 
 /** The person independent (non-LinkedIn) sources name as holding the role. */
 export interface VerifiedHolder {
   name: string;
-  /** Distinct supporting sources; one on the company's own domain counts double. */
+  /** Distinct websites that name this person in the role (older searches: a weighted count). */
   sources: number;
-  /** Up to 3, official sources first. */
+  /** Up to 3, one per website, the company's own site first. */
   sourceLinks: SourceLink[];
 }
 
@@ -106,6 +108,11 @@ export interface SearchResponse {
    * be confirmed. Absent in the demo.
    */
   verifiedHolder?: VerifiedHolder | null;
+  /**
+   * Only present when verification ran: how the answer was reached ('contradicted' = the sources
+   * and the LinkedIn profile disagree).
+   */
+  decision?: 'verified_profile' | 'verified_no_profile' | 'contradicted' | 'unverified' | 'no_results' | null;
 }
 
 /** Error body returned by the search endpoint. */

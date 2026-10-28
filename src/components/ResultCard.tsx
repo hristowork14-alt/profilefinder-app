@@ -1,12 +1,12 @@
 import { Check, Copy, ExternalLink } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
-import type { RankedProfile } from '@shared/types';
+import type { RankedProfile, SourceLink } from '@shared/types';
 import { copyToClipboard } from '@/lib/utils';
 import { Button } from './ui/Button';
 import { buttonClasses } from './ui/buttonStyles';
 import { ConfidenceBadge } from './ConfidenceBadge';
-import { VerifiedBadge } from './VerifiedHolderCard';
+import { SourceList, VerifiedBadge } from './VerifiedHolderCard';
 
 /** One ranked person. Rendered as a row in a ranked list, not a floating card. */
 export function ResultCard({
@@ -14,11 +14,14 @@ export function ResultCard({
   rank,
   animate = false,
   verifiedSources,
+  sourceLinks,
 }: {
   result: RankedProfile;
   rank: number;
   animate?: boolean;
   verifiedSources?: number;
+  /** For the verified person: the independent pages that name them. */
+  sourceLinks?: SourceLink[];
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -60,6 +63,7 @@ export function ResultCard({
               {copied ? 'Copied' : 'Copy URL'}
             </Button>
           </div>
+          {result.verified && sourceLinks && <SourceList links={sourceLinks} sources={verifiedSources ?? sourceLinks.length} />}
         </div>
       </article>
     </li>
@@ -70,15 +74,24 @@ export function ResultList({
   results,
   animate = false,
   verifiedSources,
+  sourceLinks,
 }: {
   results: RankedProfile[];
   animate?: boolean;
   verifiedSources?: number;
+  sourceLinks?: SourceLink[];
 }) {
   return (
     <ol className="divide-y divide-line border-y border-line">
       {results.map((result, index) => (
-        <ResultCard key={result.linkedinUrl} result={result} rank={index + 1} animate={animate} verifiedSources={verifiedSources} />
+        <ResultCard
+          key={result.linkedinUrl}
+          result={result}
+          rank={index + 1}
+          animate={animate}
+          verifiedSources={verifiedSources}
+          sourceLinks={sourceLinks}
+        />
       ))}
     </ol>
   );

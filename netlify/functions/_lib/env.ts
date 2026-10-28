@@ -18,17 +18,19 @@ export interface FunctionEnv {
   /** 'low' by default; null = don't send the effort setting at all. */
   anthropicEffort: 'low' | 'medium' | 'high' | null;
   maxSearchesPerHour: number;
+  maxSearchesPerDay: number;
   useMocks: boolean;
 }
 
 export const DEFAULT_ANTHROPIC_MODEL = 'claude-haiku-5-5';
 export const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /**
- * Cached results written before this moment are ignored: they came from an older pipeline that
- * could show self-declared LinkedIn profiles (before multi-strategy verification).
+ * Cached results written before this moment are ignored: they came from an older pipeline (last
+ * bump: sources must be about this company, one website counts once, conflicts and roles many
+ * people hold are labelled).
  * Bump this whenever the way results are found or ranked changes.
  */
-export const CACHE_VALID_AFTER = Date.parse('2026-10-26T15:00:00Z');
+export const CACHE_VALID_AFTER = Date.parse('2026-10-28T09:00:00Z');
 
 type EnvSource = Record<string, string | undefined>;
 
@@ -53,6 +55,7 @@ export function readEnv(source: EnvSource = process.env): FunctionEnv {
     anthropicModel: (source.ANTHROPIC_MODEL ?? '').trim() || DEFAULT_ANTHROPIC_MODEL,
     anthropicEffort: readEffort(source.ANTHROPIC_EFFORT),
     maxSearchesPerHour: positiveInt(source.MAX_SEARCHES_PER_HOUR, 30),
+    maxSearchesPerDay: positiveInt(source.MAX_SEARCHES_PER_DAY, 200),
     useMocks: /^(1|true|yes)$/i.test((source.USE_MOCKS ?? '').trim()),
   };
 }

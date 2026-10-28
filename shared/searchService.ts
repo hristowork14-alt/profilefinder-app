@@ -9,6 +9,8 @@ import { validateSearchRequest } from './validation';
 
 export interface SearchServiceConfig {
   maxSearchesPerHour: number;
+  /** Optional daily cap per account, on top of the hourly one (protects search credits). */
+  maxSearchesPerDay?: number;
   cacheTtlMs: number;
   /**
    * Epoch ms. Cache entries written before this are ignored, because they came from an older,
@@ -77,6 +79,7 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
       fromCache: true,
       results: cached.results,
       ...(cached.verifiedHolder !== undefined ? { verifiedHolder: cached.verifiedHolder } : {}),
+      ...(cached.decision ? { decision: cached.decision } : {}),
     });
     return {
       status: 200,
@@ -90,11 +93,12 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
         rankedBy: 'cache',
         message: !answered ? NO_RESULTS_MESSAGE : searchId ? null : NOT_SAVED_MESSAGE,
         ...(cached.verifiedHolder !== undefined ? { verifiedHolder: cached.verifiedHolder } : {}),
+        ...(cached.decision ? { decision: cached.decision } : {}),
       },
     };
   }
 
-  // 2) Rate limit — only fresh searches count.
+  // 2) Rate limits — only fresh searches count (not cache hits, not searches that failed on our side).
   const since = new Date(now().getTime() - 60 * 60 * 1000);
   const used = await store.countFreshSearchesSince(userId, since);
   if (used >= config.maxSearchesPerHour) {
@@ -105,6 +109,18 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
         code: 'rate_limited',
       },
     };
+  }
+  if (config.maxSearchesPerDay !== undefined) {
+    const usedToday = await store.countFreshSearchesSince(userId, new Date(now().getTime() - 24 * 60 * 60 * 1000));
+    if (usedToday >= config.maxSearchesPerDay) {
+      return {
+        status: 429,
+        body: {
+          error: `You've reached the limit of ${config.maxSearchesPerDay} new searches per day. Searches you've already run still work — please try again tomorrow.`,
+          code: 'rate_limited',
+        },
+      };
+    }
   }
 
   // 3) Pipeline.
@@ -138,6 +154,7 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
 
   // 4) Save to history (with the diagnostics, stored server-side only).
   const answered = result.results.length > 0 || Boolean(result.verifiedHolder);
+  const decision = trace.decision === 'not_checked' ? undefined : trace.decision;
   const searchId = await save({
     userId,
     bulkJobId: input.bulkJobId,
@@ -150,6 +167,7 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
     fromCache: false,
     results: result.results,
     ...(result.verifiedHolder !== undefined ? { verifiedHolder: result.verifiedHolder } : {}),
+    ...(decision ? { decision } : {}),
     diagnostics: trace,
   });
 
@@ -166,6 +184,7 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
         companyName: result.companyName,
         results: result.results,
         ...(result.verifiedHolder !== undefined ? { verifiedHolder: result.verifiedHolder } : {}),
+        ...(decision ? { decision } : {}),
       });
     } catch (error) {
       log(`Cache write failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -184,6 +203,7 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
       rankedBy: result.rankedBy,
       message: !answered ? NO_RESULTS_MESSAGE : searchId ? null : NOT_SAVED_MESSAGE,
       ...(result.verifiedHolder !== undefined ? { verifiedHolder: result.verifiedHolder } : {}),
+      ...(decision ? { decision } : {}),
     },
   };
 }

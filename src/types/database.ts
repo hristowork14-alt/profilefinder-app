@@ -1,4 +1,4 @@
-// Database types for supabase/migrations/0001_init.sql and 0002_verification.sql.
+// Database types for supabase/migrations/0001_init.sql, 0002_verification.sql and 0004_search_decision.sql.
 // Same shape as `supabase gen types typescript` output, with the text status
 // columns narrowed to the values allowed by their CHECK constraints.
 
@@ -7,6 +7,7 @@ export type Json = string | number | boolean | null | { [key: string]: Json | un
 export type BulkJobStatus = 'pending' | 'running' | 'completed' | 'failed';
 export type BulkRowStatus = 'pending' | 'running' | 'completed' | 'failed';
 export type SearchStatus = 'completed' | 'no_results' | 'failed';
+export type SearchDecision = 'verified_profile' | 'verified_no_profile' | 'contradicted' | 'unverified' | 'no_results';
 
 export type Database = {
   __InternalSupabase: {
@@ -129,6 +130,7 @@ export type Database = {
           verified_holder: string | null;
           verified_sources: number | null;
           verified_source_links: Json | null;
+          decision: SearchDecision | null;
         };
         Insert: {
           id?: string;
@@ -145,6 +147,7 @@ export type Database = {
           verified_holder?: string | null;
           verified_sources?: number | null;
           verified_source_links?: Json | null;
+          decision?: SearchDecision | null;
         };
         Update: {
           id?: string;
@@ -161,6 +164,7 @@ export type Database = {
           verified_holder?: string | null;
           verified_sources?: number | null;
           verified_source_links?: Json | null;
+          decision?: SearchDecision | null;
         };
         Relationships: [
           {
@@ -227,6 +231,7 @@ export type Database = {
           results: Json;
           created_at: string;
           verified_holder: Json | null;
+          decision: SearchDecision | null;
         };
         Insert: {
           domain: string;
@@ -235,6 +240,7 @@ export type Database = {
           results?: Json;
           created_at?: string;
           verified_holder?: Json | null;
+          decision?: SearchDecision | null;
         };
         Update: {
           domain?: string;
@@ -243,6 +249,7 @@ export type Database = {
           results?: Json;
           created_at?: string;
           verified_holder?: Json | null;
+          decision?: SearchDecision | null;
         };
         Relationships: [];
       };

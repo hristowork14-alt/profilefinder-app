@@ -124,4 +124,44 @@ describe('decideResults', () => {
     expect(out.decision).toBe('no_results');
     expect(out.results).toEqual([]);
   });
+
+  // Production 2026-10-27 (figma.com + Head of Design): sources were about her previous job, and
+  // her LinkedIn headline already named another company — yet she was shown as "verified".
+  it('when the matching profile names another current employer, shows it as conflicting, not verified', () => {
+    const moved: Candidate = {
+      ...real,
+      title: 'Andy Corwin - Design at Quillstone | LinkedIn',
+      snippet: 'Experience: Quillstone · Location: Seattle · 500+ connections',
+      foundWithCompany: true,
+    };
+    const out = decideResults([ranked('Andy Corwin', real.linkedinUrl, 85)], [moved], holder, ctx, { rankerReadProfiles: true });
+    expect(out.decision).toBe('contradicted');
+    expect(out.verifiedHolder).toBeNull();
+    expect(out.results[0]?.verified).toBe(false);
+    expect(out.results[0]?.reasoning).toMatch(/Quillstone/);
+    expect(out.results[0]?.confidence).toBeLessThan(75);
+  });
+
+  it('reads "@ Company" headlines too, and accepts a profile that lists this company among several', () => {
+    const at: Candidate = {
+      ...real,
+      title: 'Andy Corwin - Co-founder & CTO @ Kelvin Labs | LinkedIn',
+      snippet: 'Seattle',
+      foundWithCompany: true,
+    };
+    expect(decideResults([], [at], holder, ctx).decision).toBe('contradicted');
+    const several: Candidate = {
+      ...real,
+      title: 'Andy Corwin - CEO at Orbitly, NED at Netrisk | LinkedIn',
+      snippet: 'Experience: Orbitly · Location: Seattle',
+    };
+    expect(decideResults([], [several], holder, ctx).decision).toBe('verified_profile');
+  });
+
+  it('does not accept a namesake who holds the role at another company', () => {
+    const namesake: Candidate = { ...real, title: 'Andy Corwin - CEO at Plumbco | LinkedIn', snippet: 'Leeds', slug: 'andy-corwin-77' };
+    const out = decideResults([], [namesake], holder, ctx);
+    expect(out.decision).toBe('verified_no_profile');
+    expect(out.results).toEqual([]);
+  });
 });

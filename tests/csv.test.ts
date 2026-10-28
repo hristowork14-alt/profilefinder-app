@@ -86,11 +86,37 @@ describe('buildResultsCsv', () => {
     ];
     const csv = buildResultsCsv(rows);
     const lines = csv.trim().split(/\r?\n/);
-    expect(lines[0]).toBe('company_url,position,company_name,rank,full_name,headline,linkedin_url,confidence,reasoning');
+    expect(lines[0]).toBe(
+      'company_url,position,company_name,rank,full_name,headline,linkedin_url,confidence,reasoning,row,status,verified_person,source_url,source_quote',
+    );
     expect(lines).toHaveLength(4);
-    expect(lines[1]).toBe('stripe.com,CFO,Stripe,1,Jane Doe,"CFO, Stripe",https://www.linkedin.com/in/jane-doe,91,Current CFO.');
+    expect(lines[1]).toBe(
+      'stripe.com,CFO,Stripe,1,Jane Doe,"CFO, Stripe",https://www.linkedin.com/in/jane-doe,91,Current CFO.,1,Match found,,,',
+    );
     expect(lines[2]).toContain('"Bob ""Bobby"" Roe"');
-    expect(lines[3]).toBe('empty.example,CTO,,,,,,,');
+    expect(lines[3]).toBe('empty.example,CTO,,,,,,,,2,Not found,,,');
+  });
+
+  it('adds the status, the verified person and the best source with what it says', () => {
+    const csv = buildResultsCsv([
+      {
+        companyUrl: 'voltra.com',
+        position: 'CEO',
+        companyName: 'Voltra',
+        results: [],
+        status: 'completed',
+        rowNumber: 7,
+        verifiedHolder: {
+          name: 'Elle Marsk',
+          sources: 2,
+          sourceLinks: [{ title: 'Leadership', url: 'https://ir.voltra.com/l', quote: 'Elle Marsk, CEO.' }],
+        },
+        decision: 'verified_no_profile',
+      },
+    ]);
+    expect(csv.trim().split(/\r?\n/)[1]).toBe(
+      'voltra.com,CEO,Voltra,,,,,,,7,Verified — no LinkedIn found,Elle Marsk,https://ir.voltra.com/l,"Elle Marsk, CEO."',
+    );
   });
 
   it('neutralizes spreadsheet formulas in exported text', () => {

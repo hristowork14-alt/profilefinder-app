@@ -233,21 +233,22 @@ You'll create four free accounts: **Supabase**, **Serper**, **Anthropic** and **
 
 ## 6. Environment variables
 
-| Variable                        | Where it comes from                                      | Where to put it                   | Public / secret |
-| ------------------------------- | -------------------------------------------------------- | --------------------------------- | --------------- |
-| `VITE_SUPABASE_URL`             | Supabase → Project Settings → Data API → Project URL     | `.env` and Netlify                | Public          |
-| `VITE_SUPABASE_PUBLISHABLE_KEY` | Supabase → Project Settings → API Keys → Publishable key | `.env` and Netlify                | Public          |
-| `SUPABASE_URL`                  | Same Project URL                                         | `.env` and Netlify                | Secret (server) |
-| `SUPABASE_SECRET_KEY`           | Supabase → Project Settings → API Keys → Secret key      | `.env` and Netlify, marked secret | **Secret**      |
-| `SEARCH_PROVIDER`               | `serper` (default)                                       | optional                          | Server          |
-| `SERPER_API_KEY`                | serper.dev dashboard                                     | `.env` and Netlify, marked secret | **Secret**      |
-| `ANTHROPIC_API_KEY`             | console.anthropic.com → API Keys                         | `.env` and Netlify, marked secret | **Secret**      |
-| `ANTHROPIC_MODEL`               | `claude-haiku-5-5` (default)                             | optional                          | Server          |
-| `ANTHROPIC_EFFORT`              | `low` (default), `medium`, `high` or `default`           | optional                          | Server          |
-| `MAX_SEARCHES_PER_HOUR`         | `30` (default) — fresh searches per user per hour        | optional                          | Server          |
-| `USE_MOCKS`                     | `false` (default). `true` = fixture search + ranking     | optional                          | Server          |
-| `VITE_DEMO_MODE`                | Leave `false`. `npm run dev:demo` turns it on by itself  | —                                 | Public          |
-| `VITE_TURNSTILE_SITE_KEY`       | Cloudflare → Turnstile → your widget → Site Key          | Netlify (production)              | Public          |
+| Variable                        | Where it comes from                                                      | Where to put it                   | Public / secret |
+| ------------------------------- | ------------------------------------------------------------------------ | --------------------------------- | --------------- |
+| `VITE_SUPABASE_URL`             | Supabase → Project Settings → Data API → Project URL                     | `.env` and Netlify                | Public          |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | Supabase → Project Settings → API Keys → Publishable key                 | `.env` and Netlify                | Public          |
+| `SUPABASE_URL`                  | Same Project URL                                                         | `.env` and Netlify                | Secret (server) |
+| `SUPABASE_SECRET_KEY`           | Supabase → Project Settings → API Keys → Secret key                      | `.env` and Netlify, marked secret | **Secret**      |
+| `SEARCH_PROVIDER`               | `serper` (default)                                                       | optional                          | Server          |
+| `SERPER_API_KEY`                | serper.dev dashboard                                                     | `.env` and Netlify, marked secret | **Secret**      |
+| `ANTHROPIC_API_KEY`             | console.anthropic.com → API Keys                                         | `.env` and Netlify, marked secret | **Secret**      |
+| `ANTHROPIC_MODEL`               | `claude-haiku-5-5` (default)                                             | optional                          | Server          |
+| `ANTHROPIC_EFFORT`              | `low` (default), `medium`, `high` or `default`                           | optional                          | Server          |
+| `MAX_SEARCHES_PER_HOUR`         | `30` (default; production uses `110`) — fresh searches per user per hour | optional                          | Server          |
+| `MAX_SEARCHES_PER_DAY`          | `200` (default) — fresh searches per user per 24 hours                   | optional                          | Server          |
+| `USE_MOCKS`                     | `false` (default). `true` = fixture search + ranking                     | optional                          | Server          |
+| `VITE_DEMO_MODE`                | Leave `false`. `npm run dev:demo` turns it on by itself                  | —                                 | Public          |
+| `VITE_TURNSTILE_SITE_KEY`       | Cloudflare → Turnstile → your widget → Site Key                          | Netlify (production)              | Public          |
 
 Anything starting with `VITE_` is compiled into the browser code — that's expected for the Supabase URL and publishable key (Row Level Security protects the data). Nothing secret may ever start with `VITE_`.
 
@@ -295,9 +296,10 @@ Anything starting with `VITE_` is compiled into the browser code — that's expe
 ## 8. Limits and costs
 
 - **Netlify function time limit:** synchronous functions may run for 30 seconds. ProfileFinder's pipeline stops itself at 9 seconds (plus ~1 s for database work), so it stays well inside the limit; no plan upgrade is needed. If Claude is slow, the heuristic ranker answers instead of the request timing out.
-- **Serper:** each fresh search uses up to 3 queries, so the 2,500 free credits cover roughly 800 searches. Paid credits are prepaid packs (from $50 for 50,000 queries). Cached searches use none.
-- **Anthropic:** one short Haiku request per fresh search (a second only if the first reply isn't valid JSON).
-- **Hourly limit:** 30 fresh searches per user per hour (`MAX_SEARCHES_PER_HOUR`); cached searches don't count. A 100-row bulk file will pause at the limit — press **Resume** later, or raise the limit.
+- **Serper:** with verification on, a fresh search for a single-holder role (CEO, Head of Design) uses about 7 queries (up to ~10); a role many people hold (Engineer) uses 3. So a 100-row bulk file uses roughly 700 queries (about $0.70 at $1 per 1,000; the 2,500 free credits cover about 3 such files). Cached searches and repeated rows in one file use none.
+- **Anthropic:** up to two short Haiku requests per fresh search (reading the evidence, ranking the profiles).
+- **Limits:** fresh searches per user — 30 per hour by default (`MAX_SEARCHES_PER_HOUR`; production is set to 110 so a full 100-row file runs in one go) and 200 per 24 hours (`MAX_SEARCHES_PER_DAY`). Cached searches and searches that failed on our side don't count. A bulk file that reaches a limit pauses — press **Resume** later.
+- **Time:** about 8–9 seconds per row, 2 rows at a time — roughly 7–10 minutes for 100 rows. The Bulk page shows the time left.
 - **Supabase emails:** the built-in email sender has a very low hourly limit, fine for testing. For real users, add your own SMTP provider under **Authentication → Emails → SMTP Settings**.
 
 ---
@@ -351,11 +353,35 @@ Scripts: `npm run dev` · `npm run dev:demo` · `npm run build` · `npm run buil
 
 ---
 
+## How a person is verified
+
+Anyone can type "CTO at Cloudflare" into their own LinkedIn headline, so for a role one person holds (CEO, CTO, Head of Design …) ProfileFinder first asks the open web — not LinkedIn — who holds it, and only then looks that person up on LinkedIn. All of this reads search-result text only; no page is opened and LinkedIn is never requested.
+
+1. **Evidence:** 2–3 web searches for the company and role with LinkedIn excluded.
+2. **Which results count** (`shared/corroboration.ts`, `shared/sourceQuality.ts`):
+   - the result must be about this company (it names the company or its website, or is on the company's own site);
+   - the person must be named next to the role, in the same sentence;
+   - not counted: former holders ("former", "ex-", "was", "until 2024", "stepped down"), different roles ("Vice President" is not "President", "assistant to the CEO"), the role at another organisation ("head of design at Quillstone"), and job ads / careers pages;
+   - one website counts once, however many of its pages say it; the company's own website counts double;
+   - social networks, video and podcast platforms, forums and contact-data sites are weak: together they add at most one point and never confirm anyone on their own.
+3. **Two readings:** a pattern reader and Claude both read the evidence. Claude may only name someone who appears literally in the results it cites, and each cited result is checked by the same rules. If both readings name different people, **nobody is verified**.
+4. **LinkedIn lookup** of the verified name (with the company, by name alone, and a nickname form).
+5. **Decision** (`shared/decision.ts`):
+   - the profile matches → **Verified**, with up to 3 sources and the sentence each one says;
+   - no findable profile → **Verified — no LinkedIn found** (name and sources only);
+   - the profile names another current employer, or Claude reads it as contradicting the sources → **Conflicting information**;
+   - no verified person → only credible profiles (confidence ≥ 50) as **Possible match — not verified**.
+6. **Roles many people hold** (Engineer, Recruiter, Marketing Manager …) have no single holder to verify: they skip steps 1–4 and show well-matching profiles as **Possible match — many hold this role**.
+
+The Bulk page, the Excel file ("How to read" sheet) and the CSV use the same status words.
+
 ## 11. Known limitations
 
 - **Result quality depends on Google's index.** Small companies, very generic names and people with hidden profiles may return nothing or the wrong person. The detected company name is shown so you can spot a wrong match.
 - **The heuristic fallback is cruder than Claude**: it can't always tell a deputy or a look-alike company ("Stripe Group") from the real thing; such results get lower, not zero, confidence.
-- **Bulk jobs run in your browser tab.** Closing the tab pauses the job; it continues only when you press Resume.
+- **Bulk jobs run in your browser tab.** Closing the tab pauses the job; it continues only when you press Resume. A temporary error is retried once automatically; **Retry failed rows** tries the rest again later.
+- **LinkedIn links are not opened.** They come from Google's index, so a profile can be out of date or deleted even when the person is right. The status and the sources show how the answer was reached.
+- **Verification needs public evidence.** Small companies and junior roles often have no independent source; their results are shown as "Possible match — not verified" rather than guessed.
 - **The domain normalizer** knows common multi-part endings (`.co.uk`, `.com.au`, `github.io` …) but not the full public-suffix list.
 - **GDPR:** the app stores names, headlines and public profile URLs of the people it finds (from public search results), plus a 7-day shared cache. Users can delete their data; the privacy page explains what is stored. If you offer this commercially, have the legal basis (legitimate interest) and the information duties toward the people found reviewed by a lawyer.
 - **Netlify** is the only supported host (the functions use the Netlify Functions format).

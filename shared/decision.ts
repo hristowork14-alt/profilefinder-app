@@ -5,9 +5,10 @@
 //    (marked verified). Profiles that merely claim the title are not shown.
 //  • A verified holder exists but no profile matches → show the holder's name and sources, no
 //    profiles (e.g. a CEO who has no public LinkedIn profile).
-//  • A verified holder exists, but Claude read their profile and scored it below 50 (e.g. it shows
-//    they have moved on) → the sources and the profile disagree: show that profile unverified, with
-//    Claude's own score and reasoning, and no verified holder.
+//  • A verified holder exists, but their profile disagrees: it names another current employer
+//    ("Design at Quillstone"), or Claude read it and scored it below 50 (e.g. it shows they have
+//    moved on) → show that profile unverified, with the reason, and no verified holder
+//    ("contradicted").
 //  • No verified holder → show only credible results (confidence ≥ 50), labelled unverified;
 //    thin, possibly self-declared profiles are capped below that.
 
@@ -15,6 +16,7 @@ import { namesMatch } from './corroboration';
 import { parseLinkedInTitle } from './heuristicRanker';
 import { normalizePosition } from './positionSynonyms';
 import { profileSignals } from './profileQuality';
+import { mentionsCompany } from './sourceQuality';
 import type { Candidate, RankedProfile, RankingContext, VerifiedHolder } from './types';
 
 export type Decision = 'verified_profile' | 'verified_no_profile' | 'contradicted' | 'unverified' | 'no_results';
@@ -41,11 +43,34 @@ function mentions(haystack: string, phrase: string): boolean {
   return p.length > 0 && ` ${normalizePosition(haystack)} `.includes(` ${p} `);
 }
 
-/** A namesake must at least mention the company or the role to count as the verified person. */
-function relatesToRole(candidate: Candidate, ctx: RankingContext): boolean {
+/** A profile found by name alone must mention the company to count as the verified person (the role alone fits namesakes elsewhere). */
+function relatesToCompany(candidate: Candidate, ctx: RankingContext): boolean {
   const text = `${candidate.title} ${candidate.snippet}`;
   const label = ctx.domain.split('.')[0] ?? ctx.domain;
-  return [ctx.companyName, label, ctx.domain, ctx.position, ...ctx.synonyms].some((term) => mentions(text, term));
+  return [ctx.companyName, label, ctx.domain].some((term) => mentions(text, term)) || mentionsCompany(text, ctx);
+}
+
+/** Highest confidence a conflicting profile is shown with. */
+const CONFLICT_CAP = 60;
+const EMPLOYER_AT = /(?:^|[\s,(])(?:at|@)\s+([^|·,;()–—]+?)(?=\s*(?:$|[|·,;()–—]|\s-\s|\sand\s))/gi;
+const EXPERIENCE = /\bExperience:\s*([^·|]+)/gi;
+
+/** Employers a LinkedIn search result states: "Design at Quillstone", "CTO @ Kelvin", "Experience: Quillstone". */
+export function statedEmployers(candidate: Pick<Candidate, 'title' | 'snippet'>): string[] {
+  const { headline } = parseLinkedInTitle(candidate.title);
+  const found = [...headline.matchAll(EMPLOYER_AT), ...candidate.snippet.matchAll(EXPERIENCE)].map((m) => (m[1] ?? '').trim());
+  return found.filter((e) => e.length >= 2);
+}
+
+/** The other employer the profile names, when it names employers and none of them is this company. */
+export function otherEmployer(candidate: Pick<Candidate, 'title' | 'snippet'>, ctx: RankingContext): string | null {
+  const employers = statedEmployers(candidate);
+  if (employers.length === 0) return null;
+  const isThis = (org: string) => {
+    const key = normalizePosition(org);
+    return mentionsCompany(org, ctx) || (key.length >= 3 && ` ${normalizePosition(ctx.companyName)} `.includes(` ${key} `));
+  };
+  return employers.some(isThis) ? null : (employers[0] ?? null);
 }
 
 export function decideResults(
@@ -59,19 +84,33 @@ export function decideResults(
     const found = candidates
       // Google matched the company on the page when it answered "<name>" "<company>", so a bare
       // snippet is fine then; otherwise the snippet itself must mention the company or the role.
-      .filter((c) => namesMatch(holder.name, parseLinkedInTitle(c.title).name) && (c.foundWithCompany || relatesToRole(c, ctx)))
+      .filter((c) => namesMatch(holder.name, parseLinkedInTitle(c.title).name) && (c.foundWithCompany || relatesToCompany(c, ctx)))
       .slice(0, MAX_VERIFIED_PROFILES);
     if (found.length === 0) return { results: [], verifiedHolder: holder, decision: 'verified_no_profile' };
 
     const doubted = (c: Candidate) => {
+      if (otherEmployer(c, ctx)) return true;
       const score = ranked.find((r) => r.linkedinUrl === c.linkedinUrl)?.confidence;
       return Boolean(options.rankerReadProfiles) && score !== undefined && score < MIN_UNVERIFIED_CONFIDENCE;
     };
     const matching = found.filter((c) => !doubted(c));
     if (matching.length === 0) {
-      const results = ranked
-        .filter((r) => found.some((c) => c.linkedinUrl === r.linkedinUrl))
-        .map((r): RankedProfile => ({ ...r, verified: false }))
+      const results = found
+        .map((candidate): RankedProfile => {
+          const fromRanker = ranked.find((r) => r.linkedinUrl === candidate.linkedinUrl);
+          const parsed = parseLinkedInTitle(candidate.title);
+          const employer = otherEmployer(candidate, ctx);
+          return {
+            fullName: fromRanker?.fullName ?? parsed.name,
+            headline: fromRanker?.headline ?? parsed.headline,
+            linkedinUrl: candidate.linkedinUrl,
+            confidence: Math.min(fromRanker?.confidence ?? 40, CONFLICT_CAP),
+            reasoning: employer
+              ? `Sources name ${holder.name} as ${ctx.position} at ${ctx.companyName}, but this LinkedIn profile shows ${employer} — it may be out of date, or a different person.`
+              : (fromRanker?.reasoning ?? `Sources name ${holder.name}, but this LinkedIn profile does not clearly match.`),
+            verified: false,
+          };
+        })
         .sort((a, b) => b.confidence - a.confidence);
       return { results, verifiedHolder: null, decision: 'contradicted' };
     }

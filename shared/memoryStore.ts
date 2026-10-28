@@ -70,7 +70,8 @@ export function createMemoryStore(
     },
 
     async countFreshSearchesSince(userId, since) {
-      return db.searches.filter((s) => s.userId === userId && !s.fromCache && new Date(s.createdAt) >= since).length;
+      return db.searches.filter((s) => s.userId === userId && !s.fromCache && s.status !== 'failed' && new Date(s.createdAt) >= since)
+        .length;
     },
 
     async userOwnsBulkJob(userId, bulkJobId) {
@@ -94,6 +95,7 @@ export function createMemoryStore(
         resultCount: input.results.length,
         results: input.results.map((r) => ({ ...r })),
         ...(input.verifiedHolder !== undefined ? { verifiedHolder: input.verifiedHolder } : {}),
+        ...(input.decision ? { decision: input.decision } : {}),
       });
       if (input.diagnostics) diagnostics.set(id, input.diagnostics);
       commit();
