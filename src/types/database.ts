@@ -1,4 +1,5 @@
-// Database types for supabase/migrations/0001_init.sql, 0002_verification.sql and 0004_search_decision.sql.
+// Database types for supabase/migrations/0001_init.sql, 0002_verification.sql, 0004_search_decision.sql and
+// 0005_more_results_and_outcomes.sql.
 // Same shape as `supabase gen types typescript` output, with the text status
 // columns narrowed to the values allowed by their CHECK constraints.
 
@@ -7,7 +8,16 @@ export type Json = string | number | boolean | null | { [key: string]: Json | un
 export type BulkJobStatus = 'pending' | 'running' | 'completed' | 'failed';
 export type BulkRowStatus = 'pending' | 'running' | 'completed' | 'failed';
 export type SearchStatus = 'completed' | 'no_results' | 'failed';
-export type SearchDecision = 'verified_profile' | 'verified_no_profile' | 'contradicted' | 'unverified' | 'no_results';
+export type SearchDecision =
+  | 'verified_profile'
+  | 'verified_elsewhere'
+  | 'verified_name_match'
+  | 'verified_no_profile'
+  | 'likely'
+  | 'contradicted'
+  | 'unverified'
+  | 'closest'
+  | 'no_results';
 
 export type Database = {
   __InternalSupabase: {
@@ -131,6 +141,7 @@ export type Database = {
           verified_sources: number | null;
           verified_source_links: Json | null;
           decision: SearchDecision | null;
+          verified_role: string | null;
         };
         Insert: {
           id?: string;
@@ -148,6 +159,7 @@ export type Database = {
           verified_sources?: number | null;
           verified_source_links?: Json | null;
           decision?: SearchDecision | null;
+          verified_role?: string | null;
         };
         Update: {
           id?: string;
@@ -165,6 +177,7 @@ export type Database = {
           verified_sources?: number | null;
           verified_source_links?: Json | null;
           decision?: SearchDecision | null;
+          verified_role?: string | null;
         };
         Relationships: [
           {
@@ -261,6 +274,7 @@ export type Database = {
           decision: string;
           extraction: string | null;
           timings: Json;
+          funnel: Json | null;
           created_at: string;
         };
         Insert: {
@@ -270,6 +284,7 @@ export type Database = {
           decision: string;
           extraction?: string | null;
           timings?: Json;
+          funnel?: Json | null;
           created_at?: string;
         };
         Update: {
@@ -279,6 +294,7 @@ export type Database = {
           decision?: string;
           extraction?: string | null;
           timings?: Json;
+          funnel?: Json | null;
           created_at?: string;
         };
         Relationships: [

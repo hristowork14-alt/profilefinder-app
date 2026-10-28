@@ -56,9 +56,12 @@ function stripIndirectMentions(text: string): string {
   return text.replace(/\b(?:reports? to|reporting to|working with|supporting|assistant to)\s+(?:the\s+|our\s+)?[^.;,]*/gi, ' ');
 }
 
-export function rankHeuristically(candidates: Candidate[], ctx: RankingContext): RankedProfile[] {
+export function rankHeuristically(candidates: Candidate[], ctx: RankingContext, options: { maxResults?: number } = {}): RankedProfile[] {
   const domainLabel = ctx.domain.split('.')[0] ?? ctx.domain;
   const scored: RankedProfile[] = [];
+  // Real app: the company's other names and other forms of the title count too (absent in the demo).
+  const aliases = ctx.aliases ?? [];
+  const titleForms = [...ctx.synonyms, ...(ctx.variants ?? [])];
 
   for (const original of candidates) {
     const candidate = { ...original, snippet: stripIndirectMentions(original.snippet) };
@@ -66,14 +69,21 @@ export function rankHeuristically(candidates: Candidate[], ctx: RankingContext):
     if (!name) continue;
     const text = `${candidate.title} ${candidate.snippet}`;
 
-    const companyInTitle = includesPhrase(candidate.title, ctx.companyName) || includesPhrase(candidate.title, domainLabel);
-    const companyAnywhere = companyInTitle || includesPhrase(text, ctx.companyName) || includesPhrase(text, ctx.domain);
+    const companyInTitle =
+      includesPhrase(candidate.title, ctx.companyName) ||
+      includesPhrase(candidate.title, domainLabel) ||
+      aliases.some((a) => includesPhrase(candidate.title, a));
+    const companyAnywhere =
+      companyInTitle ||
+      includesPhrase(text, ctx.companyName) ||
+      includesPhrase(text, ctx.domain) ||
+      aliases.some((a) => includesPhrase(text, a));
     if (!companyAnywhere) continue;
 
     const exactInTitle = includesPhrase(headline, ctx.position);
-    const synonymInTitle = ctx.synonyms.find((s) => includesPhrase(headline, s));
+    const synonymInTitle = titleForms.find((s) => includesPhrase(headline, s));
     const exactInSnippet = includesPhrase(candidate.snippet, ctx.position);
-    const synonymInSnippet = ctx.synonyms.find((s) => includesPhrase(candidate.snippet, s));
+    const synonymInSnippet = titleForms.find((s) => includesPhrase(candidate.snippet, s));
     const roleMentioned = Boolean(exactInTitle || synonymInTitle || exactInSnippet || synonymInSnippet);
     // Independent sources (see corroboration.ts): only used when the real app ran that check.
     const evidenceNamesSomeone = (ctx.evidence?.length ?? 0) > 0;
@@ -118,5 +128,5 @@ export function rankHeuristically(candidates: Candidate[], ctx: RankingContext):
     scored.push({ fullName: name, headline, linkedinUrl: candidate.linkedinUrl, confidence, reasoning });
   }
 
-  return scored.sort((a, b) => b.confidence - a.confidence).slice(0, MAX_RESULTS);
+  return scored.sort((a, b) => b.confidence - a.confidence).slice(0, options.maxResults ?? MAX_RESULTS);
 }

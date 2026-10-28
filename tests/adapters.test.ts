@@ -35,6 +35,26 @@ describe('Serper adapter', () => {
     expect(JSON.parse(String(seen!.init.body))).toEqual({ q: 'site:linkedin.com/in "Stripe" "CFO"', num: 10 });
   });
 
+  it('reports the credits Serper charged, and assumes 1 (2 above 10 results) when it does not say', async () => {
+    const reply = (body: unknown) => (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof fetch;
+    const used: number[] = [];
+    const onUsage = (credits: number) => used.push(credits);
+    await createSerperProvider('k', reply({ organic: [], credits: 2 })).search('q', { signal: signal(), limit: 10, onUsage });
+    await createSerperProvider('k', reply({ organic: [] })).search('q', { signal: signal(), limit: 10, onUsage });
+    await createSerperProvider('k', reply({ organic: [] })).search('q', { signal: signal(), limit: 50, onUsage });
+    expect(used).toEqual([2, 1, 2]);
+  });
+
+  it('asks for up to 100 results when more are needed', async () => {
+    let body: unknown = null;
+    const fakeFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ organic: [] }), { status: 200 });
+    }) as typeof fetch;
+    await createSerperProvider('k', fakeFetch).search('q', { signal: signal(), limit: 500 });
+    expect(body).toEqual({ q: 'q', num: 100 });
+  });
+
   it('also returns the answer box, knowledge graph and "People also ask" as extra hits after the organic ones', async () => {
     const fakeFetch = (async () =>
       new Response(

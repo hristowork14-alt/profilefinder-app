@@ -6,10 +6,14 @@ import { z } from 'zod';
 import type { SearchHit, SearchProvider } from '../../../shared/types';
 
 const SERPER_URL = 'https://google.serper.dev/search';
+/** Serper's maximum results per request. */
+const MAX_RESULTS = 100;
 /** Placeholder source URL for the knowledge graph panel, which has no single link. */
 const KNOWLEDGE_GRAPH_URL = 'https://serper.dev/knowledge-graph';
 
 const SerperResponse = z.object({
+  /** Credits charged for this request (Serper reports it; not documented as guaranteed). */
+  credits: z.number().optional().catch(undefined),
   organic: z
     .array(
       z.object({
@@ -74,11 +78,12 @@ function extraHits(data: Parsed): SearchHit[] {
 export function createSerperProvider(apiKey: string, fetchImpl: typeof fetch = fetch): SearchProvider {
   return {
     name: 'serper',
-    async search(query, { signal, limit }) {
+    async search(query, { signal, limit, onUsage }) {
+      const num = Math.min(Math.max(limit, 1), MAX_RESULTS);
       const response = await fetchImpl(SERPER_URL, {
         method: 'POST',
         headers: { 'X-API-KEY': apiKey, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ q: query, num: Math.min(Math.max(limit, 1), 20) }),
+        body: JSON.stringify({ q: query, num }),
         signal,
       });
       if (!response.ok) {
@@ -87,6 +92,8 @@ export function createSerperProvider(apiKey: string, fetchImpl: typeof fetch = f
       }
       const parsed = SerperResponse.safeParse(await response.json());
       if (!parsed.success) throw new SearchProviderError('Serper returned an unexpected response');
+      // Reported as 1 credit for up to 10 results and 2 above that; Serper's own figure wins.
+      onUsage?.(parsed.data.credits ?? (num > 10 ? 2 : 1));
 
       const hits: SearchHit[] = [];
       for (const item of parsed.data.organic ?? []) {

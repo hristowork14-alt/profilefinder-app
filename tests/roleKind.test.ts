@@ -45,3 +45,18 @@ describe('isSingleHolderRole', () => {
     }
   });
 });
+
+describe('topRoleTitles', () => {
+  it('names the top role of the function a "Head of" / Director / VP position leads', async () => {
+    const { topRoleTitles } = await import('../shared/roleKind');
+    expect(topRoleTitles('Head of Design', ['Design Director', 'VP Design'])).toEqual(['Chief Design Officer']);
+    expect(topRoleTitles('Head of Engineering', ['CTO', 'Chief Technology Officer', 'VP Engineering'])).toEqual([
+      'Chief Technology Officer',
+      'Chief Engineering Officer',
+    ]);
+    expect(topRoleTitles('Marketing Director', [])).toEqual(['Chief Marketing Officer']);
+    expect(topRoleTitles('VP of People', [])).toEqual(['Chief People Officer']);
+    expect(topRoleTitles('CEO', [])).toEqual([]);
+    expect(topRoleTitles('Mechanical Engineer', [])).toEqual([]);
+  });
+});

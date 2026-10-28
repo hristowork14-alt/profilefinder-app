@@ -65,6 +65,21 @@ export function buildPersonQuery(personName: string, companyName: string): strin
   return `${SITE} ${quote(personName)} ${quote(companyName)}`;
 }
 
+/** A verified person by name and role, for finding their profile when the name and company together find nothing. */
+export function buildPersonRoleQuery(personName: string, role: string): string {
+  return `${SITE} ${quote(personName)} ${quote(role)}`;
+}
+
+/** One company name (or alias) with one form of the title. */
+export function buildNameQuery(companyName: string, title: string): string {
+  return `${SITE} ${quote(companyName)} ${quote(title)}`;
+}
+
+/** Looser: the words without quotes, so Google can match them anywhere and in any order. */
+export function buildLooseQuery(companyName: string, title: string): string {
+  return `${SITE} ${clean(companyName)} ${clean(title)}`;
+}
+
 /** Queries 1 and 2 — company name + position, and company name + the first synonym. */
 export function buildNameQueries(companyName: string, position: string, synonyms: string[]): string[] {
   const queries = [`${SITE} ${quote(companyName)} ${quote(position)}`];

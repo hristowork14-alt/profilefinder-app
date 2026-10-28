@@ -1,6 +1,8 @@
 // Types shared by the Netlify Functions, the browser demo and the tests.
 // Everything in /shared is plain TypeScript with no Node- or browser-only APIs.
 
+import type { Decision } from './decision';
+
 /** One organic result from a web search API. */
 export interface SearchHit {
   title: string;
@@ -46,6 +48,11 @@ export interface SourceLink {
 /** The person independent (non-LinkedIn) sources name as holding the role. */
 export interface VerifiedHolder {
   name: string;
+  /**
+   * The title the sources give them, when it is not the one searched for (e.g. "Chief Design
+   * Officer" for a "Head of Design" search: the top role of that function).
+   */
+  role?: string;
   /** Distinct websites that name this person in the role (older searches: a weighted count). */
   sources: number;
   /** Up to 3, one per website, the company's own site first. */
@@ -59,6 +66,12 @@ export interface RankingContext {
   synonyms: string[];
   /** People that independent web sources name as holding the role (empty or absent = no evidence). */
   evidence?: { name: string; sources: number }[];
+  /** Other names of the company from its own website ("Bugatti Automobiles"); real app only. */
+  aliases?: string[];
+  /** True for roles many people hold at once (Engineer): no single holder, up to 25 results. Real app only. */
+  manyHolders?: boolean;
+  /** Other forms of the title that were searched for ("Mechanical Design Engineer", translations). Real app only. */
+  variants?: string[];
 }
 
 export type RankedBy = 'claude' | 'heuristic';
@@ -69,6 +82,8 @@ export interface SearchOptions {
   signal: AbortSignal;
   /** How many results to ask for. */
   limit: number;
+  /** Called with the credits the provider charged for this query, when it reports them. */
+  onUsage?: (credits: number) => void;
 }
 
 /** A web search API (Serper, Brave, …). Swappable through SEARCH_PROVIDER. */
@@ -112,7 +127,9 @@ export interface SearchResponse {
    * Only present when verification ran: how the answer was reached ('contradicted' = the sources
    * and the LinkedIn profile disagree).
    */
-  decision?: 'verified_profile' | 'verified_no_profile' | 'contradicted' | 'unverified' | 'no_results' | null;
+  decision?: Decision | null;
+  /** Real app, "closest" answers: the other forms of the title that were also searched for. */
+  triedTitles?: string[];
 }
 
 /** Error body returned by the search endpoint. */

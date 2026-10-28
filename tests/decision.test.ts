@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { decideResults } from '../shared/decision';
+import { closestMatches, decideResults } from '../shared/decision';
 import type { Candidate, RankedProfile, VerifiedHolder } from '../shared/types';
 
 const ctx = { companyName: 'Orbitly', domain: 'orbitly.com', position: 'CEO', synonyms: ['Chief Executive Officer'] };
@@ -163,5 +163,94 @@ describe('decideResults', () => {
     const out = decideResults([], [namesake], holder, ctx);
     expect(out.decision).toBe('verified_no_profile');
     expect(out.results).toEqual([]);
+  });
+
+  // Production 2026-10-28 (imagga.com + CTO): he is CTO at both companies; the headline names the
+  // other one first. That is a dual role, not a conflict.
+  it('a profile that lists another employer and this company (not as past) is verified, working elsewhere too', () => {
+    const dual: Candidate = {
+      ...real,
+      title: 'Andy Corwin - Co-founder & CTO @ Kelvin Labs | LinkedIn',
+      snippet: 'Experience: Kelvin Labs · At Orbitly, I lead the AI team.',
+      foundWithCompany: true,
+    };
+    const out = decideResults([], [dual], holder, ctx);
+    expect(out.decision).toBe('verified_elsewhere');
+    expect(out.results[0]?.verified).toBe(true);
+    expect(out.verifiedHolder).toEqual(holder);
+    const past: Candidate = { ...dual, snippet: 'Experience: Kelvin Labs · ex-Orbitly, previously led the AI team.' };
+    expect(decideResults([], [past], holder, ctx).decision).toBe('contradicted');
+  });
+
+  // Production 2026-10-28 (cloudflare.com + CTO): the only profile with his exact name didn't
+  // mention the company, so no link was shown at all.
+  it('attaches the only exact-name profile for a verified person, clearly not as verified', () => {
+    const onlyOne: Candidate = { ...real, title: 'Andy Corwin | LinkedIn', snippet: 'Austin, Texas', slug: 'acorwin' };
+    const out = decideResults([], [onlyOne], holder, ctx, { nameOnlyProfile: onlyOne });
+    expect(out.decision).toBe('verified_name_match');
+    expect(out.verifiedHolder).toEqual(holder);
+    expect(out.results).toHaveLength(1);
+    expect(out.results[0]?.verified).toBe(false);
+    expect(out.results[0]?.reasoning).toMatch(/only LinkedIn profile with this exact name/);
+    // Without it: as before.
+    expect(decideResults([], [onlyOne], holder, ctx).decision).toBe('verified_no_profile');
+  });
+
+  // Production 2026-10-28 (absurdventures.com + CEO): one encyclopedia named the CEO.
+  it('a holder named by one strong source is "likely": shown, never verified', () => {
+    const one = { ...holder, sources: 1 };
+    const noProfile = decideResults([], [fake], one, ctx, { likely: true });
+    expect(noProfile.decision).toBe('likely');
+    expect(noProfile.verifiedHolder).toEqual(one);
+    expect(noProfile.results).toEqual([]);
+    const withProfile = decideResults([ranked('Andy Corwin', real.linkedinUrl, 90)], [real], one, ctx, { likely: true });
+    expect(withProfile.decision).toBe('likely');
+    expect(withProfile.results[0]?.verified).toBe(false);
+    expect(withProfile.results[0]?.confidence).toBeLessThan(75);
+  });
+
+  it('for roles many people hold, keeps ordinary short profiles and up to 25 results', () => {
+    const many = { ...ctx, position: 'Mechanical Engineer', synonyms: [], manyHolders: true };
+    const people: Candidate[] = Array.from({ length: 30 }, (_, i) => ({
+      title: `Person ${i} - Mechanical Engineer at Orbitly | LinkedIn`,
+      snippet: 'Zagreb',
+      slug: `p-${i}`,
+      linkedinUrl: `https://www.linkedin.com/in/p-${i}`,
+    }));
+    const rankedPeople = people.map((p, i) => ranked(`Person ${i}`, p.linkedinUrl, 70));
+    const out = decideResults(rankedPeople, people, null, many, { manyHolders: true });
+    expect(out.decision).toBe('unverified');
+    expect(out.results).toHaveLength(25);
+    // Single-holder roles still cap thin, possibly self-declared profiles.
+    expect(decideResults(rankedPeople.slice(0, 3), people.slice(0, 3), null, ctx).results).toEqual([]);
+  });
+});
+
+describe('closestMatches', () => {
+  const many = { companyName: 'Orbitly', domain: 'orbitly.com', position: 'Mechanical Engineer', synonyms: [], manyHolders: true };
+  const make = (i: number, title: string): Candidate => ({
+    title,
+    snippet: '',
+    slug: `c-${i}`,
+    linkedinUrl: `https://www.linkedin.com/in/c-${i}`,
+  });
+
+  it('offers people at the company with a related title, labelled as closest, below the credible line', () => {
+    const out = closestMatches(
+      [
+        make(1, 'Ana Kos - Powertrain Engineer at Orbitly | LinkedIn'),
+        make(2, 'Ivo Bar - Accountant at Orbitly | LinkedIn'),
+        make(3, 'Jo Lee - Mechanical Engineer at Quillstone | LinkedIn'),
+      ],
+      many,
+    );
+    expect(out.map((r) => r.fullName)).toEqual(['Ana Kos']);
+    expect(out[0]?.confidence).toBeLessThan(50);
+    expect(out[0]?.reasoning).toMatch(/Closest match/);
+    expect(out[0]?.verified).toBe(false);
+  });
+
+  it('returns nothing when nobody at the company has a related title', () => {
+    expect(closestMatches([make(2, 'Ivo Bar - Accountant at Orbitly | LinkedIn')], many)).toEqual([]);
   });
 });

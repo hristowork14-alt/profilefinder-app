@@ -296,7 +296,7 @@ Anything starting with `VITE_` is compiled into the browser code — that's expe
 ## 8. Limits and costs
 
 - **Netlify function time limit:** synchronous functions may run for 30 seconds. ProfileFinder's pipeline stops itself at 9 seconds (plus ~1 s for database work), so it stays well inside the limit; no plan upgrade is needed. If Claude is slow, the heuristic ranker answers instead of the request timing out.
-- **Serper:** with verification on, a fresh search for a single-holder role (CEO, Head of Design) uses about 7 queries (up to ~10); a role many people hold (Engineer) uses 3. So a 100-row bulk file uses roughly 700 queries (about $0.70 at $1 per 1,000; the 2,500 free credits cover about 3 such files). Cached searches and repeated rows in one file use none.
+- **Serper:** with verification on, a fresh search for a single-holder role (CEO, Head of Design) uses about 7 queries (up to ~10); a role many people hold (Engineer) uses 2–3, and up to ~14 credits when the search has to widen (rare titles, small companies). So a 100-row bulk file uses roughly 700 queries (about $0.70 at $1 per 1,000; the 2,500 free credits cover about 3 such files). Cached searches and repeated rows in one file use none.
 - **Anthropic:** up to two short Haiku requests per fresh search (reading the evidence, ranking the profiles).
 - **Limits:** fresh searches per user — 30 per hour by default (`MAX_SEARCHES_PER_HOUR`; production is set to 110 so a full 100-row file runs in one go) and 200 per 24 hours (`MAX_SEARCHES_PER_DAY`). Cached searches and searches that failed on our side don't count. A bulk file that reaches a limit pauses — press **Resume** later.
 - **Time:** about 8–9 seconds per row, 2 rows at a time — roughly 7–10 minutes for 100 rows. The Bulk page shows the time left.
@@ -365,13 +365,31 @@ Anyone can type "CTO at Cloudflare" into their own LinkedIn headline, so for a r
    - one website counts once, however many of its pages say it; the company's own website counts double;
    - social networks, video and podcast platforms, forums and contact-data sites are weak: together they add at most one point and never confirm anyone on their own.
 3. **Two readings:** a pattern reader and Claude both read the evidence. Claude may only name someone who appears literally in the results it cites, and each cited result is checked by the same rules. If both readings name different people, **nobody is verified**.
-4. **LinkedIn lookup** of the verified name (with the company, by name alone, and a nickname form).
+   - Only one strong source names someone (e.g. the company site or an encyclopedia) → **Likely — 1 source**, never "verified".
+   - Nobody is named for "Head of X" / "X Director" / "VP X" → the top role of that function is looked up too ("Chief Design Officer") and shown with that title.
+4. **LinkedIn lookup** of the verified name (with the company, by name alone, a nickname form, and — when nothing tied to the company comes back — the name with the role). A lookup that fails is retried once.
 5. **Decision** (`shared/decision.ts`):
-   - the profile matches → **Verified**, with up to 3 sources and the sentence each one says;
+   - the profile matches → **Verified**, with up to 3 sources and the sentence each one says; if the profile also lists another current employer → **Verified — also works elsewhere**;
+   - no profile tied to the company, but exactly one profile has the person's exact name and names no other employer → **Verified — profile matched by name only** (the profile is not marked verified);
    - no findable profile → **Verified — no LinkedIn found** (name and sources only);
-   - the profile names another current employer, or Claude reads it as contradicting the sources → **Conflicting information**;
+   - the profile shows the role at this company ended ("ex-", "former", end dates), or names only another employer, or Claude reads it as contradicting the sources → **Conflicting information**;
    - no verified person → only credible profiles (confidence ≥ 50) as **Possible match — not verified**.
-6. **Roles many people hold** (Engineer, Recruiter, Marketing Manager …) have no single holder to verify: they skip steps 1–4 and show well-matching profiles as **Possible match — many hold this role**.
+6. **Roles many people hold** (Engineer, Recruiter, Marketing Manager …) have no single holder to verify. Instead the search widens until it has about 10 credible people (see below) and shows up to 25 as **Possible match — many hold this role** (10 at first, "Show more" for the rest).
+7. **No dead ends:** when nothing matches the exact title, people at the company with a related title are shown as **Closest matches**, with the other titles that were tried.
+
+## How a role many people hold is found
+
+`shared/pipeline.ts`, `shared/titleVariants.ts`, `shared/companyName.ts`, `shared/rankMany.ts`:
+
+1. **Tier 1 — the usual queries** (company + title, website + title). If they already give about 10 credible people, the search stops here: same cost as before.
+2. **Tier 2 — widen** (only when tier 1 is short):
+   - other forms of the title: rule-based (field form "Mechanical Engineering", specialisation "Mechanical Design Engineer", seniority dropped) plus Claude's synonyms and **translations** into the languages the company's people use (read from the LinkedIn country sites the first results came from, and the homepage's `lang`);
+   - the company's **other names**, only from its own website (JSON-LD, `og:site_name`, title) and from headlines that extend its name ("… at Bugatti Rimac");
+   - one looser query without quotes.
+3. **Tier 3 — more results** for the main query (50 instead of 10), if still short.
+4. **Cost cap:** at most ~14 search credits for one search; every query's credits are recorded in the diagnostics (`search_diagnostics.queries`, `funnel`).
+
+Short profiles are normal for engineers and staff, so the "thin profile" cap (which stops self-declared "CEO of Amazon" profiles) applies only to roles one person holds.
 
 The Bulk page, the Excel file ("How to read" sheet) and the CSV use the same status words.
 
@@ -382,6 +400,7 @@ The Bulk page, the Excel file ("How to read" sheet) and the CSV use the same sta
 - **Bulk jobs run in your browser tab.** Closing the tab pauses the job; it continues only when you press Resume. A temporary error is retried once automatically; **Retry failed rows** tries the rest again later.
 - **LinkedIn links are not opened.** They come from Google's index, so a profile can be out of date or deleted even when the person is right. The status and the sources show how the answer was reached.
 - **Verification needs public evidence.** Small companies and junior roles often have no independent source; their results are shown as "Possible match — not verified" rather than guessed.
+- **"Any position" means "any position public search can see".** ProfileFinder only finds people whose LinkedIn profiles are public and indexed by Google; hidden or very new profiles can't be found.
 - **The domain normalizer** knows common multi-part endings (`.co.uk`, `.com.au`, `github.io` …) but not the full public-suffix list.
 - **GDPR:** the app stores names, headlines and public profile URLs of the people it finds (from public search results), plus a 7-day shared cache. Users can delete their data; the privacy page explains what is stored. If you offer this commercially, have the legal basis (legitimate interest) and the information duties toward the people found reviewed by a lawyer.
 - **Netlify** is the only supported host (the functions use the Netlify Functions format).

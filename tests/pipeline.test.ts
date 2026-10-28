@@ -420,3 +420,191 @@ describe('filterAndDedupe', () => {
     expect(out.map((c) => c.linkedinUrl)).toEqual(['https://www.linkedin.com/in/andycorwin']);
   });
 });
+
+// Production 2026-10-28 (bugatti.com + Mechanical Engineer): 10 profiles came back and all were
+// hidden; nothing broader was tried. Fictional company and people, same shapes.
+describe('runSearchPipeline: roles many people hold (real app)', () => {
+  const html = `<html lang="fr"><head><title>Northwind | Official Site</title>
+    <script type="application/ld+json">{"@type":"Organization","name":"Northwind Automobiles"}</script></head></html>`;
+  const profile = (i: number, headline: string, host = 'www', snippet = 'Zagreb') => ({
+    title: `Person ${i} - ${headline} | LinkedIn`,
+    snippet,
+    url: `https://${host}.linkedin.com/in/person-${i}`,
+  });
+
+  it('keeps ordinary short profiles, widens the search with variants, translations and the company’s other names, and returns up to 25', async () => {
+    const seen: string[] = [];
+    const prompts: string[] = [];
+    const provider: SearchProvider = {
+      name: 'test',
+      search: async (query, { limit, onUsage }) => {
+        seen.push(query);
+        onUsage?.(limit > 10 ? 2 : 1);
+        if (query.includes('Ingénieur mécanique'))
+          return [1, 2, 3, 4].map((i) => profile(100 + i, 'Ingénieur mécanique - Northwind', 'fr'));
+        if (query.includes('"Northwind Automobiles"'))
+          return [1, 2].map((i) => profile(200 + i, 'Mechanical Engineer at Northwind Automobiles'));
+        if (query.includes('"Mechanical Engineering"'))
+          return [1, 2, 3].map((i) => profile(300 + i, 'Mechanical Engineering @ Northwind Rimo', 'hr'));
+        if (query.includes('"Northwind" "Mechanical Engineer"'))
+          return [1, 2, 3].map((i) => profile(i, 'Mechanical Engineer at Northwind Rimo', 'hr'));
+        return [];
+      },
+    };
+    const llm: LlmClient = {
+      complete: async ({ prompt, system }) => {
+        prompts.push(prompt);
+        if (system.includes('ways people write one job title')) return JSON.stringify({ variants: ['Ingénieur mécanique'] });
+        // Rank everyone it was shown, by id.
+        const ids = [...prompt.matchAll(/"id": (\d+)/g)].map((m) => Number(m[1]));
+        return JSON.stringify({ results: ids.map((id) => ({ id, confidence: 75, reason: 'Role at the company.' })) });
+      },
+    };
+    const result = await runSearchPipeline(
+      { domain: 'northwind.com', position: 'Mechanical Engineer' },
+      { searchProvider: provider, fetchHomepage: async () => html, llm, corroborate: true },
+    );
+    expect(seen.some((q) => q.includes('Ingénieur mécanique'))).toBe(true);
+    expect(seen.some((q) => q.includes('"Northwind Automobiles"'))).toBe(true);
+    expect(seen.some((q) => q.includes('"Mechanical Engineering"'))).toBe(true);
+    expect(prompts.some((p) => /French|Croatian/.test(p))).toBe(true);
+    expect(result.trace.decision).toBe('unverified');
+    expect(result.results.length).toBeGreaterThanOrEqual(10);
+    expect(result.results.length).toBeLessThanOrEqual(25);
+    expect(result.trace.funnel?.credits).toBeLessThanOrEqual(14);
+    expect(result.trace.funnel?.tiers).toBeGreaterThanOrEqual(2);
+  });
+
+  it('stops after the first round when it already has enough credible people (no extra cost)', async () => {
+    const seen: string[] = [];
+    const provider: SearchProvider = {
+      name: 'test',
+      search: async (query) => {
+        seen.push(query);
+        return Array.from({ length: 12 }, (_, i) =>
+          profile(i, 'Mechanical Engineer at Northwind', 'www', 'Experience: Northwind · Location: Paris'),
+        );
+      },
+    };
+    const result = await runSearchPipeline(
+      { domain: 'northwind.com', position: 'Mechanical Engineer' },
+      { searchProvider: provider, fetchHomepage: async () => html, llm: null, corroborate: true },
+    );
+    expect(seen).toHaveLength(2);
+    expect(result.results.length).toBeGreaterThanOrEqual(10);
+    expect(result.trace.funnel?.tiers).toBe(1);
+  });
+
+  it('shows clearly labelled closest matches instead of nothing', async () => {
+    const provider: SearchProvider = {
+      name: 'test',
+      search: async (query) =>
+        query.includes('"Northwind" "Mechanical Engineer"')
+          ? [profile(1, 'Powertrain Engineer at Northwind', 'www', 'Experience: Northwind')]
+          : [],
+    };
+    const result = await runSearchPipeline(
+      { domain: 'northwind.com', position: 'Mechanical Engineer' },
+      { searchProvider: provider, fetchHomepage: async () => html, llm: null, corroborate: true },
+    );
+    expect(result.trace.decision).toBe('closest');
+    expect(result.results[0]?.reasoning).toMatch(/Closest match/);
+    expect(result.triedTitles?.length).toBeGreaterThan(0);
+  });
+});
+
+describe('runSearchPipeline: accuracy fixes (real app)', () => {
+  const run = (provider: SearchProvider, position: string, llm: LlmClient | null = null) =>
+    runSearchPipeline(
+      { domain: 'orbitly.com', position },
+      { searchProvider: provider, fetchHomepage: async () => '<title>Orbitly</title>', llm, corroborate: true },
+    );
+
+  // figma.com + Head of Design (2026-10-28): the top design leader is the Chief Design Officer.
+  it('when nobody is named for "Head of X", finds the top role of that function and labels it', async () => {
+    const provider: SearchProvider = {
+      name: 'test',
+      search: async (query) => {
+        if (query.includes('"Chief Design Officer" -site:linkedin.com'))
+          return [
+            { title: 'Orbitly names Mara Velin Chief Design Officer', snippet: '', url: 'https://news.example/1' },
+            { title: 'Mara Velin, Chief Design Officer at Orbitly', snippet: '', url: 'https://talks.example/2' },
+          ];
+        if (query.includes('"Mara Velin" "Orbitly"'))
+          return [
+            {
+              title: 'Mara Velin - Chief Design Officer at Orbitly | LinkedIn',
+              snippet: 'Experience: Orbitly',
+              url: 'https://www.linkedin.com/in/maravelin',
+            },
+          ];
+        return [];
+      },
+    };
+    const result = await run(provider, 'Head of Design');
+    expect(result.verifiedHolder).toMatchObject({ name: 'Mara Velin', role: 'Chief Design Officer' });
+    expect(result.trace.decision).toBe('verified_profile');
+  });
+
+  // absurdventures.com + CEO (2026-10-28): one encyclopedia named the CEO.
+  it('shows a holder named by one strong source as "likely"', async () => {
+    const provider: SearchProvider = {
+      name: 'test',
+      search: async (query) =>
+        query.includes('-site:linkedin.com')
+          ? [{ title: 'Orbitly - Wikipedia', snippet: 'Orbitly is led by CEO Jon Hale.', url: 'https://en.wikipedia.org/wiki/Orbitly' }]
+          : [],
+    };
+    const result = await run(provider, 'CEO');
+    expect(result.trace.decision).toBe('likely');
+    expect(result.verifiedHolder?.name).toBe('Jon Hale');
+    expect(result.results.every((r) => !r.verified)).toBe(true);
+  });
+
+  // cloudflare.com + CTO (2026-10-28): the only profile with his exact name didn't mention the company.
+  it('attaches the only exact-name profile of a verified person, labelled as a name-only match', async () => {
+    const evidence: SearchHit[] = [
+      { title: 'Orbitly CTO Ian Brask', snippet: '', url: 'https://news.example/1' },
+      { title: 'Ian Brask, CTO at Orbitly', snippet: '', url: 'https://talks.example/2' },
+    ];
+    const provider: SearchProvider = {
+      name: 'test',
+      search: async (query) => {
+        if (query.includes('-site:linkedin.com')) return evidence;
+        if (query === 'site:linkedin.com/in "Ian Brask"')
+          return [{ title: 'Ian Brask | LinkedIn', snippet: 'Austin, Texas', url: 'https://www.linkedin.com/in/ianbrask' }];
+        return [];
+      },
+    };
+    const result = await run(provider, 'CTO');
+    expect(result.trace.decision).toBe('verified_name_match');
+    expect(result.results[0]?.linkedinUrl).toBe('https://www.linkedin.com/in/ianbrask');
+    expect(result.results[0]?.verified).toBe(false);
+  });
+
+  // personio.com (2026-10-28): a person lookup timed out.
+  it('retries a person lookup that failed once', async () => {
+    let calls = 0;
+    const provider: SearchProvider = {
+      name: 'test',
+      search: async (query) => {
+        if (query.includes('-site:linkedin.com'))
+          return [
+            { title: 'Orbitly CTO Ian Brask', snippet: '', url: 'https://news.example/1' },
+            { title: 'Ian Brask, CTO at Orbitly', snippet: '', url: 'https://talks.example/2' },
+          ];
+        if (query === 'site:linkedin.com/in "Ian Brask" "Orbitly"') {
+          calls++;
+          if (calls === 1) throw new Error('timed out');
+          return [
+            { title: 'Ian Brask - CTO at Orbitly | LinkedIn', snippet: 'Experience: Orbitly', url: 'https://www.linkedin.com/in/ianbrask' },
+          ];
+        }
+        return [];
+      },
+    };
+    const result = await run(provider, 'CTO');
+    expect(calls).toBe(2);
+    expect(result.trace.decision).toBe('verified_profile');
+  });
+});

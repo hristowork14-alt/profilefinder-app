@@ -100,3 +100,40 @@ describe('rankHeuristically', () => {
     expect(rankHeuristically([candidate('x', 'Someone - Baker - Bakery | LinkedIn')], ctx)).toEqual([]);
   });
 });
+
+describe('rankHeuristically for roles many people hold (real app)', () => {
+  const ctx = {
+    companyName: 'Northwind',
+    domain: 'northwind.com',
+    position: 'Mechanical Engineer',
+    synonyms: [],
+    manyHolders: true,
+    aliases: ['Northwind Automobiles'],
+    variants: ['Ingénieur mécanique', 'Mechanical Design Engineer'],
+  };
+  const make = (i: number, title: string, snippet = '') => ({
+    title,
+    snippet,
+    slug: `p-${i}`,
+    linkedinUrl: `https://www.linkedin.com/in/p-${i}`,
+  });
+
+  it('recognises title variants, translations and the company’s other names', () => {
+    const out = rankHeuristically(
+      [
+        make(1, 'Ana Kos - Ingénieur mécanique - Northwind Automobiles | LinkedIn'),
+        make(2, 'Ivo Bar - Mechanical Design Engineer at Northwind | LinkedIn'),
+        make(3, 'Zed Q - Accountant at Northwind | LinkedIn'),
+      ],
+      ctx,
+    );
+    expect(out.map((r) => r.fullName)).toEqual(['Ana Kos', 'Ivo Bar']);
+    expect(out.every((r) => r.confidence >= 50)).toBe(true);
+  });
+
+  it('returns up to the requested number of results', async () => {
+    const people = Array.from({ length: 30 }, (_, i) => make(i, `Person ${i} - Mechanical Engineer at Northwind | LinkedIn`));
+    expect(rankHeuristically(people, ctx, { maxResults: 25 })).toHaveLength(25);
+    expect(rankHeuristically(people, ctx)).toHaveLength(5);
+  });
+});

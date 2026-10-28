@@ -389,7 +389,8 @@ export function hitNamesHolder(hit: SearchHit, name: string, ctx: RankingContext
  * company's own domain counts double. Only names with MIN_SOURCES support are returned, so one
  * stray mention never counts as confirmation.
  */
-export function extractNamedPeople(hits: SearchHit[], ctx: RankingContext): EvidenceName[] {
+export function extractNamedPeople(hits: SearchHit[], ctx: RankingContext, options: { minSources?: number } = {}): EvidenceName[] {
+  const minSources = options.minSources ?? MIN_SOURCES;
   const terms = evidenceRoleTerms(ctx.position, ctx.synonyms);
   const blocked = new Set(
     [...nameTokens(ctx.companyName), ...nameTokens(ctx.domain.split('.')[0] ?? ''), ...terms.flatMap((t) => nameTokens(t))].concat(
@@ -423,7 +424,7 @@ export function extractNamedPeople(hits: SearchHit[], ctx: RankingContext): Evid
         hosts: [...official, ...[...hosts].filter((h) => !official.includes(h))],
       };
     })
-    .filter((e) => e.sources >= MIN_SOURCES && e.strongSites >= 1)
+    .filter((e) => e.sources >= minSources && e.strongSites >= 1)
     .sort((a, b) => b.sources - a.sources)
     .slice(0, MAX_NAMES);
 }

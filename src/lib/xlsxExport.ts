@@ -19,6 +19,8 @@ import { STATUS_ORDER, rowStatus, statusCounts, statusInfo, type StatusKey } fro
 
 /** The header is on this row; rows 1–4 hold the title, file details, summary counts and a note. */
 export const HEADER_ROW = 6;
+/** "All matches" lists at most this many profiles per row (roles many people hold return up to 25). */
+const MAX_MATCHES_PER_ROW = 10;
 
 const COLORS = {
   ink: 'FF17222A',
@@ -43,6 +45,10 @@ const TONES: Record<Tone, { fill: string; font: string }> = {
 
 const STATUS_TONE: Record<StatusKey, Tone> = {
   verified: 'green',
+  verified_elsewhere: 'green',
+  verified_name_match: 'blue',
+  likely: 'amber',
+  closest: 'grey',
   verified_no_profile: 'blue',
   match: 'blue',
   possible: 'amber',
@@ -183,8 +189,12 @@ function why(row: ExportRow, status: StatusKey, top: RankedProfile | undefined):
   if (status === 'pending') return 'Resume the bulk job to search this row.';
   if (top) return top.reasoning;
   if (row.verifiedHolder) {
-    const n = row.verifiedHolder.sources;
-    return `Independent sources${n ? ` (${n})` : ''} name ${row.verifiedHolder.name} as ${row.position} at ${row.companyName ?? row.companyUrl}, but no public LinkedIn profile was found.`;
+    const { name, role, sources } = row.verifiedHolder;
+    const company = row.companyName ?? row.companyUrl;
+    const asRole = role ? `${role} (the top role for "${row.position}")` : row.position;
+    if (status === 'likely')
+      return `One independent source names ${name} as ${asRole} at ${company}; no second source confirms it, and no public LinkedIn profile was found.`;
+    return `Independent sources${sources ? ` (${sources})` : ''} name ${name} as ${asRole} at ${company}, but no public LinkedIn profile was found.`;
   }
   return statusInfo(status).action;
 }
@@ -283,18 +293,20 @@ export async function buildResultsWorkbook(rows: ExportRow[], meta: ExportMeta):
   rows.forEach((row, index) => {
     const number = row.rowNumber ?? index + 1;
     const lines: CellValue[][] = row.results.length
-      ? row.results.map((r, rank) => [
-          number,
-          row.companyUrl,
-          row.position,
-          rank + 1,
-          r.fullName,
-          r.headline,
-          link(r.linkedinUrl, r.linkedinUrl),
-          r.confidence,
-          r.verified ? 'Yes' : r.verified === false || row.verifiedHolder !== undefined ? 'No' : '',
-          r.reasoning,
-        ])
+      ? row.results
+          .slice(0, MAX_MATCHES_PER_ROW)
+          .map((r, rank) => [
+            number,
+            row.companyUrl,
+            row.position,
+            rank + 1,
+            r.fullName,
+            r.headline,
+            link(r.linkedinUrl, r.linkedinUrl),
+            r.confidence,
+            r.verified ? 'Yes' : r.verified === false || row.verifiedHolder !== undefined ? 'No' : '',
+            r.reasoning,
+          ])
       : [
           [
             number,

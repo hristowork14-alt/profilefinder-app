@@ -9,6 +9,10 @@ import { cn } from '@/lib/utils';
 
 const TONE: Record<StatusKey, string> = {
   verified: 'bg-high-soft text-high',
+  verified_elsewhere: 'bg-high-soft text-high',
+  verified_name_match: 'bg-accent-soft text-accent',
+  likely: 'bg-mid-soft text-mid',
+  closest: 'bg-low-soft text-low',
   verified_no_profile: 'bg-accent-soft text-accent',
   match: 'bg-accent-soft text-accent',
   possible: 'bg-mid-soft text-mid',

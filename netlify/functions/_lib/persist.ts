@@ -7,6 +7,8 @@ import type { Json } from '../../../src/types/database';
 import { dbTimeout, type AdminClient } from './supabaseAdmin';
 
 const trim = (value: string | null, max: number) => (value == null ? null : value.slice(0, max));
+/** search_results.rank allows 1–25 (migration 0005). */
+const MAX_SAVED_RESULTS = 25;
 
 export async function userOwnsBulkJob(admin: AdminClient, userId: string, bulkJobId: string): Promise<boolean> {
   const { data, error } = await admin
@@ -37,6 +39,7 @@ export async function saveSearch(admin: AdminClient, input: SaveSearchInput): Pr
       ...(input.verifiedHolder
         ? {
             verified_holder: input.verifiedHolder.name.slice(0, 200),
+            ...(input.verifiedHolder.role ? { verified_role: input.verifiedHolder.role.slice(0, 120) } : {}),
             verified_sources: Math.max(0, Math.min(100, Math.round(input.verifiedHolder.sources))),
             verified_source_links: input.verifiedHolder.sourceLinks.slice(0, 3) as unknown as Json,
           }
@@ -51,7 +54,7 @@ export async function saveSearch(admin: AdminClient, input: SaveSearchInput): Pr
     const { error: resultsError } = await admin
       .from('search_results')
       .insert(
-        input.results.slice(0, 5).map((result, index) => ({
+        input.results.slice(0, MAX_SAVED_RESULTS).map((result, index) => ({
           search_id: search.id,
           rank: index + 1,
           full_name: result.fullName.slice(0, 200),
@@ -93,6 +96,7 @@ async function saveDiagnostics(admin: AdminClient, searchId: string, trace: Pipe
       decision: trace.decision,
       extraction: trace.extraction,
       timings: trace.timings as unknown as Json,
+      ...(trace.funnel ? { funnel: trace.funnel as unknown as Json } : {}),
     })
     .abortSignal(dbTimeout());
   if (error) console.log(`[profilefinder] Diagnostics insert failed: ${error.message}`);

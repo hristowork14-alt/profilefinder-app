@@ -104,6 +104,15 @@ export function HistoryDetailPage() {
       )}
       {search.results.length > 0 ? (
         <>
+          {search.verifiedHolder && (search.decision === 'likely' || search.decision === 'verified_name_match') && (
+            <VerifiedHolderCard
+              holder={search.verifiedHolder}
+              position={search.position}
+              companyName={search.companyName ?? search.domain ?? search.companyUrl}
+              decision={search.decision}
+              hasProfile
+            />
+          )}
           <VerificationNote decision={search.decision} verifiedHolder={search.verifiedHolder} position={search.position} />
           <ResultList
             results={search.results}
@@ -116,6 +125,7 @@ export function HistoryDetailPage() {
           holder={search.verifiedHolder}
           position={search.position}
           companyName={search.companyName ?? search.domain ?? search.companyUrl}
+          decision={search.decision}
         />
       ) : (
         search.status !== 'failed' && <EmptyState title="No matching profiles were found">Try again with a broader title.</EmptyState>

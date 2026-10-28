@@ -137,3 +137,127 @@ export function resolveCompanyName(html: string | null, domain: string): { name:
   }
   return { name: domainToCompanyName(domain), source: 'domain' };
 }
+
+const MAX_ALIASES = 4;
+const MIN_ALIAS_LENGTH = 3;
+const ORGANIZATION_TYPES =
+  /^(?:Organization|Corporation|Company|LocalBusiness|AutomotiveBusiness|OnlineBusiness|NGO|EducationalOrganization)$/i;
+
+function jsonLdBlocks(html: string): unknown[] {
+  const blocks: unknown[] = [];
+  for (const match of html.matchAll(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    try {
+      blocks.push(JSON.parse(match[1] ?? ''));
+    } catch {
+      // Broken JSON-LD is common; skip it.
+    }
+  }
+  return blocks;
+}
+
+/** Organization names in JSON-LD (name, legalName, alternateName), including inside @graph. */
+function organizationNames(node: unknown, out: string[], depth = 0): void {
+  if (depth > 4 || node === null || typeof node !== 'object') return;
+  if (Array.isArray(node)) {
+    for (const item of node) organizationNames(item, out, depth + 1);
+    return;
+  }
+  const record = node as Record<string, unknown>;
+  const type = record['@type'];
+  const types = Array.isArray(type) ? type : [type];
+  if (types.some((t) => typeof t === 'string' && ORGANIZATION_TYPES.test(t))) {
+    for (const key of ['name', 'legalName', 'alternateName']) {
+      const value = record[key];
+      for (const item of Array.isArray(value) ? value : [value]) if (typeof item === 'string') out.push(clean(item));
+    }
+  }
+  if (record['@graph']) organizationNames(record['@graph'], out, depth + 1);
+}
+
+/**
+ * Other names the company uses for itself on its own homepage — JSON-LD Organization names, the
+ * og:site_name and title segments that contain the website's name. Used to search for and
+ * recognise profiles that write the company differently ("Northwind Automobiles"). Never guessed:
+ * only what the company's own site says.
+ */
+export function extractCompanyAliases(html: string | null, domain: string, companyName: string): string[] {
+  if (!html) return [];
+  const head = html.slice(0, 300_000);
+  const candidates: string[] = [];
+  for (const block of jsonLdBlocks(head)) organizationNames(block, candidates);
+  const og = findOgSiteName(head);
+  if (og) candidates.push(og);
+
+  const domainKey = domainToCompanyName(domain).toLowerCase().replace(/\s+/g, '');
+  const rawTitle = head.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+  if (rawTitle) {
+    for (const segment of clean(rawTitle).split(TITLE_SEPARATORS)) {
+      const name = unwrapOfficial(segment.replace(/[.!]+$/, '').trim());
+      if (
+        usable(name) &&
+        name
+          .toLowerCase()
+          .replace(/[^\p{L}\p{N}]/gu, '')
+          .includes(domainKey)
+      )
+        candidates.push(name);
+    }
+  }
+
+  const seen = new Set<string>([companyName.toLowerCase(), domain.toLowerCase()]);
+  const out: string[] = [];
+  for (const name of candidates) {
+    const key = name.toLowerCase();
+    if (name.length < MIN_ALIAS_LENGTH || !usable(name) || seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+    if (out.length >= MAX_ALIASES) break;
+  }
+  return out;
+}
+
+/** Words that, after a company's name, usually mean a different business ("Stripe Capital"). */
+export const LOOKALIKE_SUFFIX_WORDS = [
+  'group',
+  'holding',
+  'holdings',
+  'capital',
+  'ventures',
+  'partners',
+  'foundation',
+  'bank',
+  'studio',
+  'studios',
+  'consulting',
+  'international',
+];
+
+const EMPLOYER_IN_TITLE = /(?:\bat|@)\s+([^|·,;()–—]+?)(?=\s*(?:$|[|·,;()–—]|\s-\s))/gi;
+
+/**
+ * Names that extend the company's name in LinkedIn headlines ("Mechanical Engineer at Northwind
+ * Rimo" for Northwind) — the same brand family, worth searching for. Look-alike businesses
+ * ("Northwind Capital") are left out.
+ */
+export function brandFamilyNames(titles: string[], companyName: string): string[] {
+  const company = companyName.trim().toLowerCase();
+  if (company.length < 2) return [];
+  const counts = new Map<string, { name: string; count: number }>();
+  for (const title of titles) {
+    const text = title.replace(/\s*[|–—-]\s*LinkedIn\s*$/i, '');
+    for (const match of text.matchAll(EMPLOYER_IN_TITLE)) {
+      const org = clean(match[1] ?? '').replace(/[.]+$/, '');
+      const lower = org.toLowerCase();
+      if (!lower.startsWith(`${company} `)) continue;
+      const extra = lower.slice(company.length + 1).split(/\s+/);
+      if (extra.length > 2 || extra.some((w) => LOOKALIKE_SUFFIX_WORDS.includes(w))) continue;
+      const entry = counts.get(lower) ?? { name: org, count: 0 };
+      entry.count++;
+      counts.set(lower, entry);
+    }
+  }
+  return [...counts.values()]
+    .sort((a, b) => b.count - a.count)
+    .map((e) => e.name)
+    .slice(0, 2);
+}

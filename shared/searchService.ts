@@ -204,6 +204,7 @@ export async function performSearch(userId: string, rawBody: unknown, deps: Sear
       message: !answered ? NO_RESULTS_MESSAGE : searchId ? null : NOT_SAVED_MESSAGE,
       ...(result.verifiedHolder !== undefined ? { verifiedHolder: result.verifiedHolder } : {}),
       ...(decision ? { decision } : {}),
+      ...(result.triedTitles?.length ? { triedTitles: result.triedTitles } : {}),
     },
   };
 }

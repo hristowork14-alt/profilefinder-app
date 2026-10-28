@@ -5,7 +5,19 @@ import { isSingleHolderRole } from '@shared/roleKind';
 import type { ExportRow } from './csv';
 
 export type StatusKey =
-  'verified' | 'verified_no_profile' | 'match' | 'possible' | 'many' | 'conflict' | 'not_found' | 'failed' | 'pending';
+  | 'verified'
+  | 'verified_elsewhere'
+  | 'verified_name_match'
+  | 'verified_no_profile'
+  | 'likely'
+  | 'match'
+  | 'possible'
+  | 'many'
+  | 'closest'
+  | 'conflict'
+  | 'not_found'
+  | 'failed'
+  | 'pending';
 
 /** found = usable as is; review = check before using; none = nothing to use. */
 export type StatusGroup = 'found' | 'review' | 'none';
@@ -26,6 +38,33 @@ const INFO: Record<StatusKey, Omit<StatusInfo, 'key'>> = {
     meaning: 'Independent sources (not LinkedIn) name this person in the role, and their LinkedIn profile matches.',
     action: 'Ready to use.',
     group: 'found',
+  },
+  verified_elsewhere: {
+    label: 'Verified — also works elsewhere',
+    meaning:
+      'Independent sources name this person in the role, and their LinkedIn profile lists this company and another current employer.',
+    action: 'Ready to use; they hold more than one role.',
+    group: 'found',
+  },
+  verified_name_match: {
+    label: 'Verified — profile matched by name only',
+    meaning:
+      'Independent sources name this person in the role. The LinkedIn profile shown is the only one with that exact name, but it does not mention the company.',
+    action: 'The name is right; check that the profile is theirs before using it.',
+    group: 'review',
+  },
+  likely: {
+    label: 'Likely — 1 source',
+    meaning:
+      'One independent source (for example the company website or an encyclopedia) names this person in the role; no second source confirms it.',
+    action: 'Probably right — check before using.',
+    group: 'review',
+  },
+  closest: {
+    label: 'Closest matches',
+    meaning: 'Nobody with this exact title was found. These people work at the company in a related role.',
+    action: 'Use as a lead, or try a related title.',
+    group: 'review',
   },
   verified_no_profile: {
     label: 'Verified — no LinkedIn found',
@@ -80,10 +119,14 @@ const INFO: Record<StatusKey, Omit<StatusInfo, 'key'>> = {
 /** Display order (legend, summary counts). */
 export const STATUS_ORDER: StatusKey[] = [
   'verified',
+  'verified_elsewhere',
   'verified_no_profile',
+  'verified_name_match',
+  'likely',
   'match',
   'possible',
   'many',
+  'closest',
   'conflict',
   'not_found',
   'failed',
@@ -99,6 +142,10 @@ export function rowStatus(row: ExportRow): StatusKey {
   if (row.status === 'pending' || row.status === 'running') return 'pending';
   const top = row.results[0];
   if (row.decision === 'contradicted') return 'conflict';
+  if (row.decision === 'closest') return 'closest';
+  if (row.decision === 'likely') return 'likely';
+  if (row.decision === 'verified_name_match') return 'verified_name_match';
+  if (row.decision === 'verified_elsewhere') return 'verified_elsewhere';
   if (top?.verified) return 'verified';
   if (!top) return row.verifiedHolder ? 'verified_no_profile' : 'not_found';
   // No verification at all (demo, or very old searches): just a match.

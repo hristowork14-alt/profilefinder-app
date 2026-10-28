@@ -1,4 +1,4 @@
-import { AlertTriangle, BadgeCheck, ExternalLink, Info, Users } from 'lucide-react';
+import { AlertTriangle, BadgeCheck, ExternalLink, Info, Search, Users } from 'lucide-react';
 import { isSingleHolderRole } from '@shared/roleKind';
 import type { SearchResponse, SourceLink, VerifiedHolder } from '@shared/types';
 
@@ -10,7 +10,9 @@ export function SourceList({ links, sources }: { links: SourceLink[]; sources: n
   return (
     <div className="flex flex-col gap-1.5 border-t border-line pt-3">
       <p className="text-sm font-medium text-muted">
-        Confirmed by {plural(sources, 'independent website', 'independent websites')}, for example:
+        {sources <= 1
+          ? 'Named by 1 independent website:'
+          : `Confirmed by ${plural(sources, 'independent website', 'independent websites')}, for example:`}
       </p>
       <ul className="flex flex-col gap-2">
         {links.map((link) => (
@@ -32,18 +34,46 @@ export function SourceList({ links, sources }: { links: SourceLink[]; sources: n
   );
 }
 
-/** Shown when independent sources name the holder but no public LinkedIn profile was found. */
-export function VerifiedHolderCard({ holder, position, companyName }: { holder: VerifiedHolder; position: string; companyName: string }) {
+/**
+ * The person independent sources name for the role: when no profile was found, or above a
+ * profile that is "likely" or matched by name only.
+ */
+export function VerifiedHolderCard({
+  holder,
+  position,
+  companyName,
+  decision,
+  hasProfile = false,
+}: {
+  holder: VerifiedHolder;
+  position: string;
+  companyName: string;
+  decision?: SearchResponse['decision'];
+  /** A profile is listed below the card. */
+  hasProfile?: boolean;
+}) {
+  const likely = decision === 'likely';
+  const role = holder.role ?? position;
+  const lead = likely
+    ? `One independent source names the ${role} at ${companyName} as`
+    : holder.role
+      ? `Independent sources name the ${holder.role} at ${companyName} — the top role for “${position}” — as`
+      : `Independent sources say the ${position} at ${companyName} is`;
+  const Icon = likely ? Info : BadgeCheck;
   return (
     <div className="flex flex-col gap-4 rounded-lg border border-line bg-surface px-5 py-5">
       <div className="flex items-start gap-3">
-        <BadgeCheck className="mt-0.5 size-5 shrink-0 text-high" aria-hidden="true" />
+        <Icon className={`mt-0.5 size-5 shrink-0 ${likely ? 'text-mid' : 'text-high'}`} aria-hidden="true" />
         <div className="min-w-0">
-          <p className="text-[15px] text-muted">
-            Independent sources say the {position} at {companyName} is
-          </p>
+          <p className="text-[15px] text-muted">{lead}</p>
           <p className="text-2xl font-semibold tracking-tight break-words">{holder.name}</p>
-          <p className="mt-1 text-[15px] text-muted">No public LinkedIn profile was found for this person.</p>
+          {likely && <p className="mt-1 text-[15px] text-mid">Likely — only one source says so. Check before using.</p>}
+          {!hasProfile && <p className="mt-1 text-[15px] text-muted">No public LinkedIn profile was found for this person.</p>}
+          {hasProfile && decision === 'verified_name_match' && (
+            <p className="mt-1 text-[15px] text-muted">
+              The profile below is the only one with this exact name, but it doesn’t mention {companyName} — check it before using.
+            </p>
+          )}
         </div>
       </div>
       <SourceList links={holder.sourceLinks} sources={holder.sources} />
@@ -94,17 +124,34 @@ export function ManyHoldersNote() {
   );
 }
 
+/** Shown above closest matches: nobody had the exact title. */
+export function ClosestNote({ position, triedTitles }: { position: string; triedTitles?: string[] }) {
+  return (
+    <p className="flex items-start gap-2 rounded-md bg-low-soft px-4 py-3 text-[15px] text-low">
+      <Search className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <span>
+        No one with the exact title “{position}” was found, so these are the closest matches at the company.
+        {triedTitles && triedTitles.length > 0 && <> Also searched for: {triedTitles.join(', ')}.</>}
+      </span>
+    </p>
+  );
+}
+
 /** The right note above a result list, depending on how the answer was reached. */
 export function VerificationNote({
   decision,
   verifiedHolder,
   position,
+  triedTitles,
 }: {
   decision?: SearchResponse['decision'];
   verifiedHolder?: VerifiedHolder | null;
   position: string;
+  triedTitles?: string[];
 }) {
   if (decision === 'contradicted') return <ConflictNote />;
+  if (decision === 'closest') return <ClosestNote position={position} triedTitles={triedTitles} />;
+  if (decision === 'likely' || decision === 'verified_name_match') return null;
   // verifiedHolder === null (or the stored outcome "unverified"): verification ran and nobody could be confirmed.
   if (verifiedHolder !== null && decision !== 'unverified') return null;
   return isSingleHolderRole(position) ? <UnverifiedNote /> : <ManyHoldersNote />;

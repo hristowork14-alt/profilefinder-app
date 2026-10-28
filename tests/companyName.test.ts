@@ -76,3 +76,41 @@ describe('resolveCompanyName', () => {
     expect(resolveCompanyName(`<meta property="og:site_name" content="${long}"><title>${long}</title>`, 'acme.io').source).toBe('domain');
   });
 });
+
+describe('extractCompanyAliases', () => {
+  it('reads other names of the company from its own homepage (JSON-LD, og:site_name, title)', async () => {
+    const { extractCompanyAliases } = await import('../shared/companyName');
+    const html = `<html><head>
+      <title>Northwind Automobiles | Official Site</title>
+      <meta property="og:site_name" content="Northwind">
+      <script type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"Northwind Automobiles S.A.S.","legalName":"Northwind Automobiles S.A.S.","alternateName":["Northwind Rimo","NW"]}</script>
+      </head><body></body></html>`;
+    expect(extractCompanyAliases(html, 'northwind.com', 'Northwind')).toEqual([
+      'Northwind Automobiles S.A.S.',
+      'Northwind Rimo',
+      'Northwind Automobiles',
+    ]);
+  });
+
+  it('ignores broken JSON-LD, other schema types and generic words', async () => {
+    const { extractCompanyAliases } = await import('../shared/companyName');
+    const html = `<title>Home</title><script type="application/ld+json">{not json</script>
+      <script type="application/ld+json">{"@type":"WebPage","name":"Careers at Northwind"}</script>`;
+    expect(extractCompanyAliases(html, 'northwind.com', 'Northwind')).toEqual([]);
+    expect(extractCompanyAliases(null, 'northwind.com', 'Northwind')).toEqual([]);
+  });
+});
+
+describe('brandFamilyNames', () => {
+  it('finds names that extend the company name in LinkedIn headlines ("at Northwind Rimo"), but not look-alike businesses', async () => {
+    const { brandFamilyNames } = await import('../shared/companyName');
+    const titles = [
+      'Ana Kos - Mechanical Engineer at Northwind Rimo | LinkedIn',
+      'Ivo Bar - Design Engineer @ Northwind Rimo | LinkedIn',
+      'Jo Lee - Analyst at Northwind Capital | LinkedIn',
+      'Max Po - Engineer at Northwind | LinkedIn',
+      'Zed Q - Engineer at Quillstone | LinkedIn',
+    ];
+    expect(brandFamilyNames(titles, 'Northwind')).toEqual(['Northwind Rimo']);
+  });
+});

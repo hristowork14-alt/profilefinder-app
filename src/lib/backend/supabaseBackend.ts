@@ -59,6 +59,7 @@ function mapSearch(row: SearchRow, resultCount: number): SearchRecord {
       ? {
           verifiedHolder: {
             name: row.verified_holder,
+            ...(row.verified_role ? { role: row.verified_role } : {}),
             sources: row.verified_sources ?? 0,
             sourceLinks: sourceLinks(row.verified_source_links),
           },
@@ -302,13 +303,20 @@ export function createSupabaseBackend(): Backend {
           const chunk = searchIds.slice(i, i + 100);
           const { data, error } = await supabase
             .from('searches')
-            .select('id, company_name, verified_holder, verified_sources, verified_source_links, decision, search_results(*)')
+            .select(
+              'id, company_name, verified_holder, verified_role, verified_sources, verified_source_links, decision, search_results(*)',
+            )
             .in('id', chunk);
           if (error) fail('load the results', error);
           for (const row of data ?? []) {
             const results = [...((row.search_results ?? []) as SearchResultRow[])].sort((a, b) => a.rank - b.rank).map(mapResult);
             const verifiedHolder = row.verified_holder
-              ? { name: row.verified_holder, sources: row.verified_sources ?? 0, sourceLinks: sourceLinks(row.verified_source_links) }
+              ? {
+                  name: row.verified_holder,
+                  ...(row.verified_role ? { role: row.verified_role } : {}),
+                  sources: row.verified_sources ?? 0,
+                  sourceLinks: sourceLinks(row.verified_source_links),
+                }
               : null;
             map.set(row.id, { companyName: row.company_name, results, verifiedHolder, decision: row.decision ?? null });
           }

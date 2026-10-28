@@ -209,10 +209,21 @@ export function SearchPage() {
 
           {status.response.results.length > 0 ? (
             <>
+              {status.response.verifiedHolder &&
+                (status.response.decision === 'likely' || status.response.decision === 'verified_name_match') && (
+                  <VerifiedHolderCard
+                    holder={status.response.verifiedHolder}
+                    position={status.response.position}
+                    companyName={status.response.companyName}
+                    decision={status.response.decision}
+                    hasProfile
+                  />
+                )}
               <VerificationNote
                 decision={status.response.decision}
                 verifiedHolder={status.response.verifiedHolder}
                 position={status.response.position}
+                triedTitles={status.response.triedTitles}
               />
               <ResultList
                 results={status.response.results}
@@ -230,6 +241,7 @@ export function SearchPage() {
               holder={status.response.verifiedHolder}
               position={status.response.position}
               companyName={status.response.companyName}
+              decision={status.response.decision}
             />
           ) : (
             <EmptyState title="No matching profiles found">

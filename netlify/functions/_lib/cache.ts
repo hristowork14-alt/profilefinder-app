@@ -1,7 +1,7 @@
 // search_cache table access (service role only — the browser has no access to this table).
 
 import { z } from 'zod';
-import type { Decision } from '../../../shared/decision';
+import { DECISIONS, type Decision } from '../../../shared/decision';
 import type { CacheRecord } from '../../../shared/records';
 import type { RankedProfile, VerifiedHolder } from '../../../shared/types';
 import type { Json } from '../../../src/types/database';
@@ -20,11 +20,12 @@ const CachedResults = z.array(
 
 const CachedHolder = z.object({
   name: z.string().min(1).max(200),
+  role: z.string().max(120).optional(),
   sources: z.number(),
   sourceLinks: z.array(z.object({ title: z.string(), url: z.string(), quote: z.string().max(300).optional() })).max(3),
 });
 
-const CachedDecision = z.enum(['verified_profile', 'verified_no_profile', 'contradicted', 'unverified', 'no_results']);
+const CachedDecision = z.enum(DECISIONS);
 
 export async function getCached(
   admin: AdminClient,

@@ -8,12 +8,27 @@
 //   S3  the verified person is looked up on LinkedIn by name, with a nickname variant;
 //   S4  profile-quality signals go to the ranker;
 //   S5  decision.ts decides what the user sees.
-// Every query, the evidence and the decision are recorded in `trace` (no snippets).
+// For roles many people hold (Mechanical Engineer …) there is no single holder to verify; instead
+// the search widens in tiers until it has enough credible people (or hits the credit cap):
+//   tier 1  today's queries;
+//   tier 2  other forms of the title (rules + Claude, with translations into the languages the
+//           company's people use), the company's other names, one looser unquoted query;
+//   tier 3  more results for the main query.
+// Every query (with the credits it cost), the evidence, the candidate funnel and the decision are
+// recorded in `trace` (no snippets).
 
-import { resolveCompanyName } from './companyName';
-import { corroborationFor, evidenceRoleTerms, extractNamedPeople, isUsableEvidence, namesMatch, type EvidenceName } from './corroboration';
+import { brandFamilyNames, extractCompanyAliases, resolveCompanyName } from './companyName';
+import {
+  MIN_SOURCES,
+  corroborationFor,
+  evidenceRoleTerms,
+  extractNamedPeople,
+  isUsableEvidence,
+  namesMatch,
+  type EvidenceName,
+} from './corroboration';
 import { Deadline, withTimeout } from './deadline';
-import { decideResults, type Decision } from './decision';
+import { MAX_MANY_RESULTS, closestMatches, decideResults, otherEmployer, type Decision } from './decision';
 import { domainToCompanyName } from './domain';
 import { extractHolderWithClaude, type ExtractedHolder } from './extractHolder';
 import { parseLinkedInTitle, rankHeuristically } from './heuristicRanker';
@@ -22,13 +37,19 @@ import { findSynonyms, normalizePosition } from './positionSynonyms';
 import {
   buildDomainQuery,
   buildEvidenceQuery,
+  buildLooseQuery,
   buildNameQueries,
+  buildNameQuery,
   buildPersonQueries,
+  buildPersonRoleQuery,
   buildQuestionQuery,
   queryMentions,
 } from './queryBuilder';
+import { rankManyWithClaude } from './rankMany';
 import { rankWithClaude } from './rankWithClaude';
-import { isSingleHolderRole } from './roleKind';
+import { isSingleHolderRole, topRoleTitles } from './roleKind';
+import { mentionsCompany } from './sourceQuality';
+import { generateVariants, languageFromHomepage, languagesFromHits, pickLanguages, ruleVariants } from './titleVariants';
 import type {
   Candidate,
   CompanyNameSource,
@@ -97,10 +118,31 @@ export interface QueryTrace {
   error?: string;
   /** Person lookups only: the names on the LinkedIn profiles returned (names only, no snippets). */
   profiles?: string[];
+  /** Credits the search provider charged, when it reports them. */
+  credits?: number;
+  /** Search tier (roles many people hold): 1 = first round, 2 = widened, 3 = more results. */
+  tier?: number;
 }
 
-/** How the holder was read from the evidence. 'tie': the regex named two people equally often and Claude didn't settle it. */
-export type Extraction = 'none' | 'regex' | 'claude' | 'agree' | 'disagree' | 'tie';
+/**
+ * How the holder was read from the evidence. 'tie': the regex named two people equally often and
+ * Claude didn't settle it. 'likely': only one strong source names them. 'top-role': nobody was
+ * named for the exact title, but the top role of its function was ("Chief Design Officer").
+ */
+export type Extraction = 'none' | 'regex' | 'claude' | 'agree' | 'disagree' | 'tie' | 'likely' | 'top-role';
+
+/** Counts only (no names): how many candidates were found, kept and shown, and what it cost. */
+export interface SearchFunnel {
+  candidates: number;
+  credible: number;
+  shown: number;
+  /** Highest search tier used (1–3). */
+  tiers: number;
+  credits: number;
+  variants: number;
+  aliases: number;
+  languages: string[];
+}
 
 /** What happened during one search. Stored server-side for debugging; never contains snippets. */
 export interface PipelineTrace {
@@ -109,6 +151,8 @@ export interface PipelineTrace {
   extraction: Extraction;
   decision: Decision | 'not_checked';
   timings: { homepageMs: number | null; evidenceMs: number | null; extractionMs: number | null; rankMs: number | null; totalMs: number };
+  /** Real app only. */
+  funnel?: SearchFunnel;
 }
 
 export interface PipelineResult {
@@ -125,10 +169,21 @@ export interface PipelineResult {
   evidence: EvidenceName[];
   /** Only set when verification ran: the verified holder, or null if no one could be confirmed. */
   verifiedHolder?: VerifiedHolder | null;
+  /** Other forms of the title and company names also searched for (real app, roles many people hold). */
+  triedTitles?: string[];
   trace: PipelineTrace;
 }
 
 const RESULTS_PER_QUERY = 10;
+/** Roles many people hold: stop widening once this many credible people were found. */
+const TARGET_MANY = 10;
+/** Roles many people hold: never spend more than this many search credits on one search. */
+const CREDIT_CAP_MANY = 14;
+/** Results asked for in the last tier (reported as 2 credits instead of 1). */
+const DEEP_RESULTS = 50;
+/** Most candidates and variants used. */
+const MAX_TIER2_VARIANTS = 4;
+const MAX_ALIASES = 4;
 
 /** Hidden or anonymous profiles: the name can't be checked against anything. */
 const ANONYMOUS_PROFILE = /^(?:linkedin member|private profile|profile unavailable)$/i;
@@ -185,6 +240,26 @@ function regexFavourite(names: EvidenceName[]): { top: EvidenceName | null; tie:
   return { top: tie ? null : top, tie };
 }
 
+/** Same full name, letter for letter (accents and case aside) — no nickname matching. */
+function exactSameName(a: string, b: string): boolean {
+  const key = (n: string) =>
+    n
+      .normalize('NFD')
+      .replace(/\p{M}/gu, '')
+      .toLowerCase()
+      .replace(/[^\p{L}\s-]/gu, ' ')
+      .split(/\s+/)
+      .filter(Boolean)
+      .join(' ');
+  const ka = key(a);
+  return ka.split(' ').length >= 2 && ka === key(b);
+}
+
+/** Candidates that state the role (or a variant) at the company (or an alias): a cheap count to decide whether to widen. */
+function credibleCount(candidates: Candidate[], ctx: RankingContext): number {
+  return rankHeuristically(candidates, ctx, { maxResults: candidates.length }).filter((r) => r.confidence >= 50).length;
+}
+
 interface Reading {
   name: string;
   /** Weighted support (threshold). */
@@ -228,6 +303,19 @@ function agree(
   return { holder: null, extraction: regexTie ? 'tie' : 'none' };
 }
 
+/**
+ * When nobody reaches the threshold: one person named by exactly one strong (non-weak) website,
+ * with no other reading naming someone else. Shown as "likely", never as verified.
+ */
+function likelyReading(regexAll: Reading[], claude: Reading | null): VerifiedHolder | null {
+  const strongOne = (e: Reading | null | undefined): e is Reading => Boolean(e && e.sources >= 1 && (e.strongSites ?? 0) >= 1);
+  const regex = regexAll.filter(strongOne);
+  const pick = strongOne(claude) ? claude : regex.length === 1 ? regex[0]! : null;
+  if (!pick) return null;
+  if (regex.some((e) => !namesMatch(e.name, pick.name) && e.sources >= pick.sources)) return null;
+  return { name: pick.name, sources: pick.sites ?? 1, sourceLinks: pick.links ?? [] };
+}
+
 export async function runSearchPipeline(input: { domain: string; position: string }, deps: PipelineDeps): Promise<PipelineResult> {
   const timing = { ...DEFAULT_TIMING, ...deps.timing };
   const clock = deps.now ?? (() => Date.now());
@@ -238,8 +326,9 @@ export async function runSearchPipeline(input: { domain: string; position: strin
   const synonyms = findSynonyms(position);
   const verify = Boolean(deps.corroborate);
   // Only a role one person holds (CEO, Head of Design) can have a verified holder; for roles many
-  // people hold (Engineer) the decision step still filters what is shown, but no holder is sought.
+  // people hold (Engineer) the search widens instead, and the decision step filters what is shown.
   const seekHolder = verify && isSingleHolderRole(position);
+  const manyHolders = verify && !seekHolder;
 
   const trace: PipelineTrace = {
     queries: [],
@@ -248,33 +337,49 @@ export async function runSearchPipeline(input: { domain: string; position: strin
     decision: 'not_checked',
     timings: { homepageMs: null, evidenceMs: null, extractionMs: null, rankMs: null, totalMs: 0 },
   };
-  /** Runs one search query, recording kind, hit count, time and error in the trace. */
-  const runQuery = (query: string, kind: QueryKind, reserveMs: number): Promise<SearchHit[]> => {
+  /** Runs one search query, recording kind, hit count, time, credits and error in the trace. */
+  const runQuery = (
+    query: string,
+    kind: QueryKind,
+    reserveMs: number,
+    extra: { limit?: number; tier?: number } = {},
+  ): Promise<SearchHit[]> => {
     const started = clock();
+    let credits: number | undefined;
+    const record = (fields: Partial<QueryTrace>) =>
+      trace.queries.push({
+        query,
+        kind,
+        hits: 0,
+        ms: clock() - started,
+        ...(credits !== undefined ? { credits } : {}),
+        ...(extra.tier ? { tier: extra.tier } : {}),
+        ...fields,
+      });
     return withTimeout(`search "${query}"`, deadline.budget(timing.searchMs, reserveMs), (signal) =>
-      deps.searchProvider.search(query, { signal, limit: RESULTS_PER_QUERY }),
+      deps.searchProvider.search(query, {
+        signal,
+        limit: extra.limit ?? RESULTS_PER_QUERY,
+        ...(verify ? { onUsage: (c: number) => (credits = c) } : {}),
+      }),
     ).then(
       (hits) => {
-        trace.queries.push({
-          query,
-          kind,
-          hits: hits.length,
-          ms: clock() - started,
-          ...(kind === 'person' ? { profiles: profileNames(hits) } : {}),
-        });
+        record({ hits: hits.length, ...(kind === 'person' ? { profiles: profileNames(hits) } : {}) });
         return hits;
       },
       (error: unknown) => {
-        trace.queries.push({ query, kind, hits: 0, ms: clock() - started, error: errorText(error).slice(0, 200) });
+        record({ error: errorText(error).slice(0, 200) });
         throw error;
       },
     );
   };
+  /** Credits used so far (1 per query when the provider doesn't say). */
+  const creditsUsed = () => trace.queries.reduce((sum, q) => sum + (q.credits ?? 1), 0);
 
   // 1) Company name, the domain query and (when verifying) the independent evidence start together.
   deps.onProgress?.('company');
   const domainQuery = buildDomainQuery(domain, position);
-  const domainSearch = runQuery(domainQuery, 'linkedin', timing.minLlmMs);
+  const domainSearch = runQuery(domainQuery, 'linkedin', timing.minLlmMs, { tier: manyHolders ? 1 : undefined });
   const homepageStarted = clock();
   const homepage = withTimeout('homepage', deadline.budget(timing.homepageMs, timing.minLlmMs), (signal) =>
     deps.fetchHomepage(domain, signal),
@@ -299,7 +404,8 @@ export async function runSearchPipeline(input: { domain: string; position: strin
       ]
     : [];
 
-  const company = resolveCompanyName(await homepage, domain);
+  const html = await homepage;
+  const company = resolveCompanyName(html, domain);
   trace.timings.homepageMs = clock() - homepageStarted;
   const ctxBase: RankingContext = { companyName: company.name, domain, position, synonyms };
   if (seekHolder && normalizePosition(company.name) !== normalizePosition(provisionalName)) {
@@ -315,13 +421,22 @@ export async function runSearchPipeline(input: { domain: string; position: strin
 
   let regexNames: EvidenceName[] = [];
   let holder: VerifiedHolder | null = null;
+  let likely = false;
   let usedModelForExtraction = false;
   let personErrors = 0;
   /** Profiles returned for "<name>" "<company>": Google matched the company on those pages. */
   const foundWithCompany = new Set<string>();
+  /** Profiles returned for the name without the company (for the "only exact-name profile" rule). */
+  const nameOnlyHits: SearchHit[] = [];
+  /** A person lookup; a query that fails is retried once if there is time (Serper is sometimes slow). */
+  const personQuery = (query: string): Promise<SearchHit[]> =>
+    runQuery(query, 'person', timing.minLlmMs).catch((error: unknown) => {
+      if (deadline.remaining() >= timing.searchMs + timing.minLlmMs) return runQuery(query, 'person', timing.minLlmMs);
+      throw error;
+    });
   const lookUp = async (name: string): Promise<SearchHit[]> => {
     const queries = buildPersonQueries(name, company.name);
-    const settled = await Promise.allSettled(queries.map((q) => runQuery(q, 'person', timing.minLlmMs)));
+    const settled = await Promise.allSettled(queries.map(personQuery));
     return settled.flatMap((outcome, index) => {
       if (outcome.status === 'fulfilled') {
         if (queryMentions(queries[index] ?? '', company.name)) {
@@ -329,6 +444,8 @@ export async function runSearchPipeline(input: { domain: string; position: strin
             const slug = normalizeLinkedInProfileUrl(hit.url)?.slug;
             if (slug) foundWithCompany.add(slug);
           }
+        } else {
+          nameOnlyHits.push(...outcome.value);
         }
         return outcome.value;
       }
@@ -336,6 +453,9 @@ export async function runSearchPipeline(input: { domain: string; position: strin
       return [];
     });
   };
+  /** True when a lookup found a profile tied to the company (with it in the query, or naming it). */
+  const tiedToCompany = (hits: SearchHit[]) =>
+    filterAndDedupe(hits).some((c) => foundWithCompany.has(c.slug) || mentionsCompany(`${c.title} ${c.snippet}`, ctxBase));
 
   const evidenceChain = async (): Promise<SearchHit[]> => {
     if (!seekHolder) return [];
@@ -345,7 +465,8 @@ export async function runSearchPipeline(input: { domain: string; position: strin
       isUsableEvidence(h, ctxBase),
     );
     trace.timings.evidenceMs = clock() - evidenceStarted;
-    regexNames = extractNamedPeople(evidenceHits, ctxBase);
+    const allNames = extractNamedPeople(evidenceHits, ctxBase, { minSources: 1 });
+    regexNames = allNames.filter((e) => e.sources >= MIN_SOURCES);
     // Two people named equally often (often the current and a former holder): the regex can't
     // tell which one holds the role, so only Claude's reading can decide.
     const { top: regexTop, tie: regexTie } = regexFavourite(regexNames);
@@ -367,16 +488,16 @@ export async function runSearchPipeline(input: { domain: string; position: strin
       trace.timings.extractionMs = clock() - extractionStarted;
     }
 
-    const agreed = agree(regexTop, claude, 2, regexTie);
+    const agreed = agree(regexTop, claude, MIN_SOURCES, regexTie);
     holder = agreed.holder;
     trace.extraction = agreed.extraction;
-    trace.evidence = regexNames.map((e) => ({
+    trace.evidence = allNames.map((e) => ({
       name: e.name,
       sources: e.sources,
       hosts: e.hosts ?? [],
       via: claude && namesMatch(claude.name, e.name) ? 'both' : 'regex',
     }));
-    if (claude && !regexNames.some((e) => namesMatch(e.name, claude!.name))) {
+    if (claude && !allNames.some((e) => namesMatch(e.name, claude!.name))) {
       trace.evidence.unshift({
         name: claude.name,
         sources: claude.sources,
@@ -385,14 +506,58 @@ export async function runSearchPipeline(input: { domain: string; position: strin
       });
     }
 
+    // Nobody reaches the threshold: one strong source is shown as "likely" (never verified).
+    if (!holder && agreed.extraction !== 'disagree' && agreed.extraction !== 'tie') {
+      const one = likelyReading(allNames, claude);
+      if (one) {
+        holder = one;
+        likely = true;
+        trace.extraction = 'likely';
+      }
+    }
+
+    // Nobody named for "Head of X": try the top role of that function ("Chief Design Officer").
+    if (!holder && deadline.remaining() >= timing.searchMs + timing.llmMs) {
+      for (const top of topRoleTitles(position, synonyms)) {
+        const topHits = (await evidenceQuery(buildEvidenceQuery(company.name, top))).filter((h) => isUsableEvidence(h, ctxBase));
+        const topCtx: RankingContext = { ...ctxBase, position: top, synonyms: [] };
+        const named = extractNamedPeople([...evidenceHits, ...topHits], topCtx, { minSources: 1 });
+        const strong = named.filter((e) => e.sources >= MIN_SOURCES);
+        const { top: favourite } = regexFavourite(strong);
+        const pick: VerifiedHolder | null = favourite
+          ? { name: favourite.name, sources: favourite.sites ?? favourite.sources, sourceLinks: favourite.links ?? [] }
+          : likelyReading(named, null);
+        if (pick) {
+          holder = { ...pick, role: top };
+          likely = !favourite;
+          trace.extraction = 'top-role';
+          break;
+        }
+        if (deadline.remaining() < timing.searchMs + timing.llmMs) break;
+      }
+    }
+
     const earlyHits = await early;
-    const verified = holder as VerifiedHolder | null;
-    if (verified && (!regexTop || !namesMatch(verified.name, regexTop.name))) return [...(await lookUp(verified.name)), ...earlyHits];
-    return earlyHits;
+    const found = holder as VerifiedHolder | null;
+    if (!found) return earlyHits;
+    const hits = !regexTop || !namesMatch(found.name, regexTop.name) ? [...(await lookUp(found.name)), ...earlyHits] : earlyHits;
+    // No profile tied to the company: one more lookup with the name and the role.
+    if (!tiedToCompany(hits) && deadline.remaining() >= timing.searchMs + timing.minLlmMs) {
+      const byRole = await personQuery(buildPersonRoleQuery(found.name, found.role ?? position)).catch(() => {
+        personErrors++;
+        return [] as SearchHit[];
+      });
+      nameOnlyHits.push(...byRole);
+      hits.push(...byRole);
+    }
+    return hits;
   };
 
   const [settled, personHits] = await Promise.all([
-    Promise.allSettled([...nameQueries.map((q) => runQuery(q, 'linkedin', timing.minLlmMs)), domainSearch]),
+    Promise.allSettled([
+      ...nameQueries.map((q) => runQuery(q, 'linkedin', timing.minLlmMs, { tier: manyHolders ? 1 : undefined })),
+      domainSearch,
+    ]),
     evidenceChain(),
   ]);
 
@@ -408,6 +573,52 @@ export async function runSearchPipeline(input: { domain: string; position: strin
     }
   });
   if (searchErrors === settled.length) throw new SearchUnavailableError();
+
+  // 2b) Roles many people hold: widen in tiers until there are enough credible people.
+  let tiers = 1;
+  let aliases: string[] = [];
+  let variants: string[] = [];
+  let languages: string[] = [];
+  const triedTitles: string[] = [];
+  if (manyHolders) {
+    const titles = filterAndDedupe(hits).map((c) => c.title);
+    aliases = [...new Set([...extractCompanyAliases(html, domain, company.name), ...brandFamilyNames(titles, company.name)])].slice(
+      0,
+      MAX_ALIASES,
+    );
+    variants = ruleVariants(position);
+    const widened = (): RankingContext => ({ ...ctxBase, manyHolders: true, aliases, variants });
+    if (credibleCount(filterAndDedupe(hits), widened()) < TARGET_MANY && deadline.remaining() >= timing.searchMs + timing.llmMs) {
+      languages = pickLanguages(languagesFromHits(hits), languageFromHomepage(html));
+      if (deps.llm && deadline.remaining() >= timing.searchMs + timing.llmMs + timing.minLlmMs) {
+        const fromModel = await generateVariants(position, languages, deps.llm, {
+          timeoutMs: deadline.budget(2500, timing.searchMs + timing.llmMs),
+        });
+        variants = [...new Set([...variants, ...fromModel])];
+      }
+      const tier2Titles = variants.slice(0, MAX_TIER2_VARIANTS);
+      const tier2: string[] = [
+        buildLooseQuery(company.name, position),
+        ...tier2Titles.map((v) => buildNameQuery(company.name, v)),
+        ...aliases.slice(0, 1).map((a) => buildNameQuery(a, position)),
+      ].slice(0, Math.max(0, CREDIT_CAP_MANY - creditsUsed() - 2));
+      triedTitles.push(...tier2Titles, ...aliases.slice(0, 1));
+      const more = await Promise.allSettled(tier2.map((q) => runQuery(q, 'linkedin', timing.minLlmMs, { tier: 2 })));
+      for (const outcome of more) if (outcome.status === 'fulfilled') hits.push(...outcome.value);
+      tiers = 2;
+      if (
+        credibleCount(filterAndDedupe(hits), widened()) < TARGET_MANY &&
+        creditsUsed() + 2 <= CREDIT_CAP_MANY &&
+        deadline.remaining() >= timing.searchMs + timing.llmMs
+      ) {
+        const deep = await runQuery(nameQueries[0] ?? domainQuery, 'linkedin', timing.minLlmMs, { limit: DEEP_RESULTS, tier: 3 }).catch(
+          () => [] as SearchHit[],
+        );
+        hits.push(...deep);
+        tiers = 3;
+      }
+    }
+  }
   // Failed evidence or person queries don't stop the search, but the answer is incomplete (not cached).
   searchErrors += evidenceErrors + personErrors;
 
@@ -427,7 +638,19 @@ export async function runSearchPipeline(input: { domain: string; position: strin
       if (foundWithCompany.has(candidate.slug)) candidate.foundWithCompany = true;
     }
   }
-  const ctx: RankingContext = { ...ctxBase, ...(verify ? { evidence } : {}) };
+  const ctx: RankingContext = {
+    ...ctxBase,
+    ...(verify ? { evidence } : {}),
+    ...(manyHolders ? { manyHolders: true, aliases, variants } : {}),
+  };
+
+  // The only profile with the holder's exact name, when nothing tied to the company was found.
+  let nameOnlyProfile: Candidate | undefined;
+  if (verifiedHolder) {
+    const exact = filterAndDedupe(nameOnlyHits).filter((c) => exactSameName(parseLinkedInTitle(c.title).name, verifiedHolder.name));
+    if (exact.length === 1 && otherEmployer(exact[0]!, ctx) === null) nameOnlyProfile = exact[0];
+  }
+
   const base = {
     domain,
     position,
@@ -445,10 +668,36 @@ export async function runSearchPipeline(input: { domain: string; position: strin
       trace.timings.totalMs = clock() - startedAt;
       return { ...base, results, rankedBy };
     }
-    const decided = decideResults(results, candidates, verifiedHolder, ctx, { rankerReadProfiles: rankedBy === 'claude' });
+    let decided = decideResults(results, candidates, verifiedHolder, ctx, {
+      rankerReadProfiles: rankedBy === 'claude',
+      manyHolders,
+      likely,
+      nameOnlyProfile,
+    });
+    // Nothing matched the exact title: the closest matches, clearly labelled, instead of nothing.
+    if (decided.decision === 'no_results') {
+      const closest = closestMatches(candidates, ctx);
+      if (closest.length > 0) decided = { results: closest, verifiedHolder: null, decision: 'closest' };
+    }
     trace.decision = decided.decision;
     trace.timings.totalMs = clock() - startedAt;
-    return { ...base, results: decided.results, rankedBy, verifiedHolder: decided.verifiedHolder };
+    trace.funnel = {
+      candidates: candidates.length,
+      credible: credibleCount(candidates, ctx),
+      shown: decided.results.length,
+      tiers,
+      credits: creditsUsed(),
+      variants: variants.length,
+      aliases: aliases.length,
+      languages,
+    };
+    return {
+      ...base,
+      results: decided.results,
+      rankedBy,
+      verifiedHolder: decided.verifiedHolder,
+      ...(decided.decision === 'closest' ? { triedTitles: [...new Set(triedTitles)] } : {}),
+    };
   };
 
   // 3) Rank — Claude if available and there's time, otherwise the heuristic. At most 2 model
@@ -457,6 +706,31 @@ export async function runSearchPipeline(input: { domain: string; position: strin
   if (candidates.length === 0) return finish([], deps.llm ? 'claude' : 'heuristic');
 
   const rankStarted = clock();
+  if (manyHolders) {
+    // The most relevant candidates first, so the model sees them within its limit.
+    const relevant = new Set(rankHeuristically(candidates, ctx, { maxResults: candidates.length }).map((r) => r.linkedinUrl));
+    const ordered = [...candidates.filter((c) => relevant.has(c.linkedinUrl)), ...candidates.filter((c) => !relevant.has(c.linkedinUrl))];
+    if (deps.llm && deadline.remaining() >= timing.minLlmMs) {
+      const llm = deps.llm;
+      try {
+        const results = await withTimeout('ranking', deadline.budget(timing.llmMs + 2000, 200), (signal) =>
+          rankManyWithClaude(ordered, ctx, llm, {
+            timeoutMs: deadline.budget(timing.llmMs + 2000, 200),
+            maxResults: MAX_MANY_RESULTS,
+            signal,
+          }),
+        );
+        trace.timings.rankMs = clock() - rankStarted;
+        return finish(results, 'claude');
+      } catch (error) {
+        log(`Claude ranking unavailable, using heuristic: ${errorText(error)}`);
+      }
+    }
+    const results = rankHeuristically(candidates, ctx, { maxResults: MAX_MANY_RESULTS });
+    trace.timings.rankMs = clock() - rankStarted;
+    return finish(results, 'heuristic');
+  }
+
   if (deps.llm && deadline.remaining() >= timing.minLlmMs) {
     const llm = deps.llm;
     try {

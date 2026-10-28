@@ -81,18 +81,31 @@ export function ResultList({
   verifiedSources?: number;
   sourceLinks?: SourceLink[];
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const shown = expanded ? results : results.slice(0, FIRST_PAGE);
+  const hidden = results.length - shown.length;
   return (
-    <ol className="divide-y divide-line border-y border-line">
-      {results.map((result, index) => (
-        <ResultCard
-          key={result.linkedinUrl}
-          result={result}
-          rank={index + 1}
-          animate={animate}
-          verifiedSources={verifiedSources}
-          sourceLinks={sourceLinks}
-        />
-      ))}
-    </ol>
+    <div className="flex flex-col gap-3">
+      <ol className="divide-y divide-line border-y border-line">
+        {shown.map((result, index) => (
+          <ResultCard
+            key={result.linkedinUrl}
+            result={result}
+            rank={index + 1}
+            animate={animate && index < FIRST_PAGE}
+            verifiedSources={verifiedSources}
+            sourceLinks={sourceLinks}
+          />
+        ))}
+      </ol>
+      {hidden > 0 && (
+        <Button variant="secondary" className="self-start" onClick={() => setExpanded(true)}>
+          Show {hidden} more
+        </Button>
+      )}
+    </div>
   );
 }
+
+/** Profiles shown before "Show more" (roles many people hold return up to 25). */
+const FIRST_PAGE = 10;
